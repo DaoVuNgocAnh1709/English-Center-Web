@@ -1,0 +1,48 @@
+services:
+  database:
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    ports: !reset []
+
+  backend:
+    build:
+      context: ./backend
+      target: production
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set FRONTEND_ORIGIN in .env}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:?Set JWT_ACCESS_TTL in .env}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:?Set JWT_REFRESH_TTL in .env}
+      JWT_REFRESH_DAYS: ${JWT_REFRESH_DAYS:?Set JWT_REFRESH_DAYS in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      TEACHER_EMAIL: ${TEACHER_EMAIL:?Set TEACHER_EMAIL in .env}
+      STUDENT_EMAIL: ${STUDENT_EMAIL:?Set STUDENT_EMAIL in .env}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?Set DEMO_PASSWORD in .env}
+      UPLOAD_DIR: /app/uploads
+    volumes: !override
+      - uploads_data:/app/uploads
+    ports: !reset []
+    command: sh -c "npx prisma migrate deploy && node dist/main.js"
+
+  frontend:
+    build:
+      context: ./frontend
+      target: production
+      args:
+        NEXT_PUBLIC_API_URL: /api
+    environment:
+      NODE_ENV: production
+    volumes: !reset []
+    ports: !reset []
+    command: node server.js
+
+  nginx:
+    ports: !override
+      - "80:80"
+

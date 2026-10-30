@@ -1,0 +1,146 @@
+services:
+  database:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+      target: development
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      PORT: ${PORT:?Set PORT in .env}
+      NODE_ENV: ${NODE_ENV:?Set NODE_ENV in .env}
+      TSC_WATCHFILE: DynamicPriorityPolling
+      CHOKIDAR_USEPOLLING: "true"
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:?Set FRONTEND_ORIGIN in .env}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?Set JWT_ACCESS_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET in .env}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:?Set JWT_ACCESS_TTL in .env}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:?Set JWT_REFRESH_TTL in .env}
+      JWT_REFRESH_DAYS: ${JWT_REFRESH_DAYS:?Set JWT_REFRESH_DAYS in .env}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?Set ADMIN_EMAIL in .env}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      TEACHER_EMAIL: ${TEACHER_EMAIL:?Set TEACHER_EMAIL in .env}
+      STUDENT_EMAIL: ${STUDENT_EMAIL:?Set STUDENT_EMAIL in .env}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:?Set DEMO_PASSWORD in .env}
+      UPLOAD_DIR: /app/uploads
+      UPLOAD_MAX_FILE_MB: ${UPLOAD_MAX_FILE_MB:?Set UPLOAD_MAX_FILE_MB in .env}
+      UPLOAD_MAX_BATCH_MB: ${UPLOAD_MAX_BATCH_MB:?Set UPLOAD_MAX_BATCH_MB in .env}
+      UPLOAD_MAX_IMAGE_FILES: ${UPLOAD_MAX_IMAGE_FILES:?Set UPLOAD_MAX_IMAGE_FILES in .env}
+      UPLOAD_MAX_PDF_PAGES: ${UPLOAD_MAX_PDF_PAGES:?Set UPLOAD_MAX_PDF_PAGES in .env}
+      UPLOAD_MAX_IMAGE_PIXELS: ${UPLOAD_MAX_IMAGE_PIXELS:?Set UPLOAD_MAX_IMAGE_PIXELS in .env}
+      UPLOAD_MAX_UNCOMPRESSED_MB: ${UPLOAD_MAX_UNCOMPRESSED_MB:?Set UPLOAD_MAX_UNCOMPRESSED_MB in .env}
+      UPLOAD_MAX_ARCHIVE_ENTRIES: ${UPLOAD_MAX_ARCHIVE_ENTRIES:?Set UPLOAD_MAX_ARCHIVE_ENTRIES in .env}
+      UPLOAD_MAX_SHEETS: ${UPLOAD_MAX_SHEETS:?Set UPLOAD_MAX_SHEETS in .env}
+      UPLOAD_MAX_ROWS: ${UPLOAD_MAX_ROWS:?Set UPLOAD_MAX_ROWS in .env}
+      UPLOADS_PER_USER_PER_HOUR: ${UPLOADS_PER_USER_PER_HOUR:?Set UPLOADS_PER_USER_PER_HOUR in .env}
+      UPLOAD_TOTAL_QUOTA_MB: ${UPLOAD_TOTAL_QUOTA_MB:?Set UPLOAD_TOTAL_QUOTA_MB in .env}
+      UPLOAD_USER_QUOTA_MB: ${UPLOAD_USER_QUOTA_MB:?Set UPLOAD_USER_QUOTA_MB in .env}
+      IMPORT_WORKER_ENABLED: ${IMPORT_WORKER_ENABLED:?Set IMPORT_WORKER_ENABLED in .env}
+      IMPORT_POLL_INTERVAL_MS: ${IMPORT_POLL_INTERVAL_MS:?Set IMPORT_POLL_INTERVAL_MS in .env}
+      IMPORT_TIMEOUT_MS: ${IMPORT_TIMEOUT_MS:?Set IMPORT_TIMEOUT_MS in .env}
+      SOURCE_RETENTION_DAYS: ${SOURCE_RETENTION_DAYS:?Set SOURCE_RETENTION_DAYS in .env}
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: 3310
+      CLAMAV_REQUIRED: ${CLAMAV_REQUIRED:?Set CLAMAV_REQUIRED in .env}
+      CLAMAV_TIMEOUT_MS: ${CLAMAV_TIMEOUT_MS:?Set CLAMAV_TIMEOUT_MS in .env}
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+      - uploads_data:/app/uploads
+    depends_on:
+      database:
+        condition: service_healthy
+      clamav:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    command: sh -c "npm install --no-audit --no-fund && npm run prisma:generate && npx prisma migrate deploy && npm run start:dev"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:stable
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    restart: unless-stopped
+
+  backup:
+    image: postgres:17-bookworm
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+      BACKUP_DIR: /backups
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:?Set BACKUP_RETENTION_DAYS in .env}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:?Set BACKUP_INTERVAL_SECONDS in .env}
+      UPLOAD_DIR: /uploads
+    volumes:
+      - ./infrastructure/backup:/scripts:ro
+      - ./backups:/backups
+      - uploads_data:/uploads:ro
+    depends_on:
+      database:
+        condition: service_healthy
+    command: ["sh", "-c", "while true; do /scripts/backup.sh; sleep $$BACKUP_INTERVAL_SECONDS; done"]
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: development
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: /api
+      INTERNAL_API_URL: http://backend:4000/api
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+      - frontend_next:/app/.next
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: npm run dev
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - frontend
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  backend_node_modules:
+  frontend_node_modules:
+  frontend_next:
+  uploads_data:
+  clamav_data:
+

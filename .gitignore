@@ -1,0 +1,17 @@
+node_modules/
+.next/
+dist/
+coverage/
+.env
+backups/
+.env.*
+!.env.example
+frontend/.env.local
+backend/prisma/dev.db
+backend/uploads/
+*.log
+test-results/
+playwright-report/
+*.png
+.DS_Store
+

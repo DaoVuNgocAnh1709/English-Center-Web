@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-29T00:00:00+07:00",
+  "title": "Design System: Bright Path English",
+  "extensions": {
+    "colorMeta": {
+      "navy": { "role": "primary", "displayName": "Trust Navy", "canonical": "#123d68", "tonalRamp": ["#071b2d", "#092b4c", "#123d68", "#315f88", "#5f82a4", "#91a9bf", "#c5d1dc", "#eef3f7"] },
+      "red": { "role": "secondary", "displayName": "Action Red", "canonical": "#d91f2a", "tonalRamp": ["#48070b", "#7f0d15", "#b9141d", "#d91f2a", "#e85c64", "#f0989d", "#f8cdd0", "#fff1f2"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Confident Vietnamese Display", "purpose": "Page and section headings." },
+      "body": { "displayName": "Readable Vietnamese Body", "purpose": "Content, forms and learning tasks." }
+    },
+    "shadows": [
+      { "name": "ambient-card", "value": "0 16px 42px rgba(17,43,68,.07)", "purpose": "Primary content and operational surfaces." },
+      { "name": "floating-modal", "value": "0 26px 70px rgba(6,29,52,.20)", "purpose": "Dialogs and protected focus." }
+    ],
+    "motion": [
+      { "name": "ease-out-expo", "value": "cubic-bezier(.16,1,.3,1)", "purpose": "Route entrances and deliberate reveals." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" },
+      { "name": "xl", "value": "1280px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "description": "Decisive red action with a 48px touch target.",
+      "html": "<button class=\"ds-button-primary\" type=\"button\">Tiếp tục</button>",
+      "css": ".ds-button-primary{min-height:48px;padding:0 24px;border:0;border-radius:10px;background:#d91f2a;color:#fff;font:700 15px/1 'Be Vietnam Pro',Arial,sans-serif;box-shadow:0 8px 20px rgba(217,31,42,.16)}.ds-button-primary:hover{background:#b9141d}.ds-button-primary:focus-visible{outline:3px solid rgba(18,61,104,.28);outline-offset:3px}.ds-button-primary:disabled{opacity:.48;cursor:not-allowed}"
+    },
+    {
+      "name": "Secondary Button",
+      "description": "Quiet supporting action with a navy outline.",
+      "html": "<button class=\"ds-button-secondary\" type=\"button\">Xem chi tiết</button>",
+      "css": ".ds-button-secondary{min-height:48px;padding:0 24px;border:1px solid #123d68;border-radius:10px;background:#fff;color:#123d68;font:700 15px/1 'Be Vietnam Pro',Arial,sans-serif}.ds-button-secondary:hover{background:#eef3f7}.ds-button-secondary:focus-visible{outline:3px solid rgba(18,61,104,.24);outline-offset:3px}"
+    },
+    {
+      "name": "Field Control",
+      "description": "Accessible text input for forms and filters.",
+      "html": "<label class=\"ds-field\"><span>Họ và tên</span><input placeholder=\"Nhập họ và tên\"></label>",
+      "css": ".ds-field{display:grid;gap:8px;color:#171717;font:700 14px/1.5 'Be Vietnam Pro',Arial,sans-serif}.ds-field input{min-height:48px;padding:0 16px;border:1px solid #d7dee7;border-radius:10px;background:#fff;color:#171717;font:400 15px/1.5 'Be Vietnam Pro',Arial,sans-serif}.ds-field input:focus{outline:3px solid rgba(18,61,104,.16);border-color:#123d68}"
+    },
+    {
+      "name": "Surface Panel",
+      "description": "The default grouping surface for one real task or content unit.",
+      "html": "<section class=\"ds-surface\"><h3>Nội dung cần xử lý</h3><p>Thông tin hỗ trợ cho một nhiệm vụ cụ thể.</p></section>",
+      "css": ".ds-surface{padding:24px;border-radius:14px;background:#fff;color:#171717;box-shadow:0 16px 42px rgba(17,43,68,.07);font-family:'Be Vietnam Pro',Arial,sans-serif}.ds-surface h3{margin:0 0 8px;color:#092b4c;font-size:20px}.ds-surface p{margin:0;color:#667085;line-height:1.7}"
+    },
+    {
+      "name": "Workspace Navigation Item",
+      "description": "Persistent staff navigation with a strong active state.",
+      "html": "<a class=\"ds-workspace-nav is-active\" href=\"#\"><span>01</span>Tổng quan</a>",
+      "css": ".ds-workspace-nav{display:flex;align-items:center;gap:12px;min-height:48px;padding:0 14px;border-radius:10px;color:#c5d1dc;text-decoration:none;font:700 14px/1 'Be Vietnam Pro',Arial,sans-serif}.ds-workspace-nav span{color:#91a9bf}.ds-workspace-nav:hover{background:rgba(255,255,255,.07);color:#fff}.ds-workspace-nav.is-active{background:#fff;color:#092b4c}.ds-workspace-nav.is-active span{color:#d91f2a}"
+    },
+    {
+      "name": "Status Chip",
+      "description": "Compact semantic status, never decorative filler.",
+      "html": "<span class=\"ds-status\"><i></i>Đang hoạt động</span>",
+      "css": ".ds-status{display:inline-flex;align-items:center;gap:7px;padding:7px 10px;border-radius:999px;background:#edf9f3;color:#147a4b;font:700 12px/1 'Be Vietnam Pro',Arial,sans-serif}.ds-status i{width:7px;height:7px;border-radius:50%;background:#21a366}"
+    },
+    {
+      "name": "Metric Strip",
+      "description": "A shared surface for compact, comparable dashboard metrics.",
+      "html": "<div class=\"ds-metric-strip\"><div><strong>12</strong><span>Bài cần duyệt</span></div><div><strong>86%</strong><span>Đã hoàn thành</span></div></div>",
+      "css": ".ds-metric-strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));overflow:hidden;border-radius:14px;background:#fff;box-shadow:0 16px 42px rgba(17,43,68,.07);font-family:'Be Vietnam Pro',Arial,sans-serif}.ds-metric-strip div{display:grid;gap:4px;padding:20px 24px}.ds-metric-strip div+div{border-left:1px solid #e7e9ee}.ds-metric-strip strong{color:#092b4c;font-size:28px}.ds-metric-strip span{color:#667085;font-size:13px}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Clear Learning Path",
+    "overview": "A warm local education brand paired with precise, dependable learning tools. Public pages use split editorial introductions; staff and student screens use quiet academic workspaces.",
+    "keyCharacteristics": ["Clear hierarchy", "Warm imagery", "Split public introductions", "Restrained academic workspaces", "Consistent controls"],
+    "rules": [
+      { "name": "The One Red Rule", "body": "Red identifies the primary action or most important state.", "section": "colors" },
+      { "name": "The 11px Floor Rule", "body": "Functional text never renders below 11px.", "section": "typography" },
+      { "name": "The Modal Supremacy Rule", "body": "No animated or elevated surface may compete with dialogs.", "section": "elevation" }
+    ],
+    "dos": ["Balance headings and use pretty body wrapping.", "Use divided rows for comparable learning and operational items."],
+    "donts": ["Do not fabricate evidence.", "Do not repeat generic icon-card patterns.", "Do not use red as decoration on every heading."]
+  }
+}

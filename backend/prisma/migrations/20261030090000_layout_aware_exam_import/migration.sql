@@ -1,0 +1,5 @@
+ALTER TABLE "ExamQuestion"
+ADD COLUMN "recognitionConfidence" DOUBLE PRECISION NOT NULL DEFAULT 1,
+ADD COLUMN "reviewFlags" JSONB,
+ADD COLUMN "sourceBounds" JSONB,
+ADD COLUMN "reviewedAt" TIMESTAMP(3);

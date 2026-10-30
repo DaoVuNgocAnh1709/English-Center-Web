@@ -1,0 +1,6 @@
+import { Mail, MapPin, Phone } from "lucide-react";
+import { LeadForm } from "@/components/lead-form";
+import { PageHero } from "@/components/page-hero";
+
+export const metadata = { title: "Liên hệ và đăng ký tư vấn" };
+export default function ContactPage() { return <><PageHero kicker="Liên hệ" title="Bắt đầu bằng một buổi trao đổi phù hợp với nhu cầu" description="Để lại thông tin để trung tâm tư vấn chương trình, đánh giá đầu vào và khung giờ học phù hợp."/><section className="py-20 md:py-28"><div className="container-shell grid gap-10 lg:grid-cols-[.75fr_1.25fr]"><div><h2 className="text-2xl font-extrabold text-[#092b4c]">Thông tin trung tâm</h2><p className="mt-4 text-sm leading-7 text-slate-600">Thông tin dưới đây là dữ liệu mẫu và cần được chị chủ xác nhận trước khi xuất bản chính thức.</p><div className="mt-8 grid gap-4">{[[Phone,"0900 000 000"],[Mail,"contact@example.com"],[MapPin,"Hà Nội · Hưng Yên"]].map(([Icon,text])=>{const I=Icon as typeof Phone;return <div key={String(text)} className="soft-card flex items-center gap-4 p-5"><span className="grid h-11 w-11 place-items-center rounded-xl bg-[#fff0f1] text-[#d91f2a]"><I size={19}/></span><strong className="text-sm">{String(text)}</strong></div>})}</div></div><div className="soft-card p-7 md:p-10"><LeadForm/></div></div></section></> }

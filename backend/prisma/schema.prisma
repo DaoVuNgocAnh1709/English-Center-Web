@@ -1,0 +1,353 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  TEACHER
+  STUDENT
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  ENROLLED
+  CLOSED
+}
+
+enum MaterialType {
+  DOCUMENT
+  VIDEO
+  WORKSHEET
+  EXAM
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+enum ContentStatus {
+  DRAFT
+  REVIEW
+  PUBLISHED
+}
+
+enum SchoolLevel {
+  PRESCHOOL
+  PRIMARY
+  MIDDLE
+  HIGH
+}
+
+enum ExamAccess {
+  PUBLIC
+  STUDENT_ONLY
+}
+
+enum QuestionKind {
+  SINGLE_CHOICE
+  SHORT_TEXT
+  ESSAY
+}
+
+enum ApplicationStatus {
+  NEW
+  CONTACTED
+  INTERVIEW
+  HIRED
+  REJECTED
+}
+
+enum AttemptStatus {
+  DRAFT
+  SUBMITTED
+  GRADED
+}
+
+enum SourceImportStatus {
+  QUEUED
+  SCANNING
+  PROCESSING
+  READY
+  FAILED
+  QUARANTINED
+}
+
+model User {
+  id                String           @id @default(cuid())
+  email             String           @unique
+  passwordHash      String
+  fullName          String
+  role              Role             @default(STUDENT)
+  isActive          Boolean          @default(true)
+  refreshSessions   RefreshSession[]
+  enrollments       Enrollment[]
+  examSources       ExamSource[]
+  exams             Exam[]
+  examAttempts      ExamAttempt[]
+  uploadedMaterials Material[]
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+}
+
+model RefreshSession {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Course {
+  id           String       @id @default(cuid())
+  slug         String       @unique
+  title        String
+  ageRange     String
+  summary      String
+  description  String?
+  status       CourseStatus @default(DRAFT)
+  sortOrder    Int          @default(0)
+  level        String?
+  duration     String?
+  thumbnailUrl String?
+  lessons      Lesson[]
+  enrollments  Enrollment[]
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([status, sortOrder])
+}
+
+model Lesson {
+  id         String   @id @default(cuid())
+  courseId   String
+  course     Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title      String
+  summary    String?
+  sortOrder  Int      @default(0)
+  youtubeUrl String?
+  driveUrl   String?
+  isPreview  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([courseId, sortOrder])
+}
+
+model Material {
+  id          String        @id @default(cuid())
+  slug        String        @unique
+  title       String
+  summary     String
+  category    String
+  level       String?
+  type        MaterialType
+  driveUrl    String?
+  youtubeUrl  String?
+  isPublic    Boolean       @default(false)
+  sortOrder   Int           @default(0)
+  publishedAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  schoolLevel SchoolLevel?
+  grade       Int?
+  status      ContentStatus @default(DRAFT)
+  fileKey     String?
+  fileName    String?
+  mimeType    String?
+  sizeBytes   Int?
+  checksum    String?
+  createdById String?
+  createdBy   User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@index([isPublic, sortOrder])
+  @@index([category])
+  @@index([createdById, checksum])
+}
+
+model ExamSource {
+  id             String   @id @default(cuid())
+  fileKey        String
+  fileName       String
+  mimeType       String   @default("application/pdf")
+  pageCount      Int
+  sizeBytes      Int
+  checksum       String
+  status         SourceImportStatus @default(QUEUED)
+  progress       Int                @default(0)
+  statusMessage  String?
+  lastError      String?
+  processedAt    DateTime?
+  importDraft    Json?
+  importWarnings Json?
+  uploadedById   String
+  uploadedBy     User     @relation(fields: [uploadedById], references: [id])
+  exams          Exam[]
+  createdAt      DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([uploadedById, checksum])
+}
+
+model Exam {
+  id                 String         @id @default(cuid())
+  slug               String         @unique
+  title              String
+  summary            String         @default("")
+  schoolLevel        SchoolLevel
+  grade              Int
+  durationMinutes    Int            @default(45)
+  status             ContentStatus  @default(DRAFT)
+  access             ExamAccess     @default(PUBLIC)
+  sourceId           String
+  source             ExamSource     @relation(fields: [sourceId], references: [id])
+  startPage          Int
+  endPage            Int
+  fileKey            String
+  createdById        String
+  createdBy          User           @relation(fields: [createdById], references: [id])
+  questions          ExamQuestion[]
+  attempts           ExamAttempt[]
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  extractedAt        DateTime?
+  extractionWarnings Json?
+  extractionStatus   SourceImportStatus @default(READY)
+  extractionProgress Int                @default(100)
+  extractionError    String?
+
+  @@index([status, schoolLevel, grade])
+  @@index([extractionStatus, createdAt])
+}
+
+model ExamQuestion {
+  id                    String       @id @default(cuid())
+  examId                String
+  exam                  Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  position              Int
+  kind                  QuestionKind @default(SINGLE_CHOICE)
+  answer                String?
+  points                Float        @default(1)
+  sourceLabel           String?
+  section               String?
+  content               String?
+  options               Json?
+  sourcePage            Int?
+  recognitionConfidence Float        @default(1)
+  reviewFlags           Json?
+  sourceBounds          Json?
+  reviewedAt            DateTime?
+
+  @@unique([examId, position])
+}
+
+model RecognitionCorrection {
+  id               String   @id @default(cuid())
+  examId           String
+  sourceId         String
+  sourceChecksum   String
+  questionPosition Int
+  signature        String
+  action           String
+  originalData     Json
+  correctedData    Json?
+  correctedById    String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([sourceChecksum, signature])
+  @@index([examId, questionPosition])
+  @@index([correctedById, createdAt])
+}
+
+model ExamAttempt {
+  id              String        @id @default(cuid())
+  examId          String
+  exam            Exam          @relation(fields: [examId], references: [id])
+  userId          String?
+  user            User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  answers         Json
+  earned          Float         @default(0)
+  possible        Float         @default(0)
+  pending         Int           @default(0)
+  participantName String?
+  guestTokenHash  String?
+  status          AttemptStatus @default(DRAFT)
+  manualScores    Json?
+  manualEarned    Float         @default(0)
+  manualPossible  Float         @default(0)
+  teacherFeedback String?
+  gradedById      String?
+  submittedAt     DateTime?
+  gradedAt        DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([examId, status, updatedAt])
+}
+
+model TeacherApplication {
+  id         String            @id @default(cuid())
+  fullName   String
+  email      String
+  phone      String
+  area       String
+  experience String
+  message    String?
+  status     ApplicationStatus @default(NEW)
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+
+  @@index([status, createdAt])
+}
+
+model Enrollment {
+  id        String           @id @default(cuid())
+  userId    String
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId  String
+  course    Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  progress  Int              @default(0)
+  status    EnrollmentStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  @@unique([userId, courseId])
+  @@index([userId, status])
+}
+
+model Lead {
+  id               String     @id @default(cuid())
+  parentName       String
+  phone            String
+  studentName      String
+  studentGrade     String
+  interestedCourse String
+  note             String?
+  status           LeadStatus @default(NEW)
+  source           String     @default("website")
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  @@index([status, createdAt])
+  @@index([phone])
+}
