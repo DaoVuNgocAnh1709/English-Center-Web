@@ -9,6 +9,7 @@ import {
 import { ContentService } from "./content.service";
 import { AntivirusService } from "./antivirus.service";
 import { ExamImportWorker } from "./exam-import.worker";
+import { GeminiImportService } from "./gemini-import.service";
 
 @Module({
   imports: [AuthModule],
@@ -18,6 +19,6 @@ import { ExamImportWorker } from "./exam-import.worker";
     AdminContentController,
     StudentContentController,
   ],
-  providers: [ContentService, AntivirusService, ExamImportWorker],
+  providers: [ContentService, AntivirusService, GeminiImportService, ExamImportWorker],
 })
 export class ContentModule {}

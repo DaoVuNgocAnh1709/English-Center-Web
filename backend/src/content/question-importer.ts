@@ -1,5 +1,9 @@
 import { BadRequestException } from "@nestjs/common";
-import { QuestionKind } from "@prisma/client";
+import {
+  ExtractionProvider,
+  QuestionKind,
+  QuestionTaskType,
+} from "@prisma/client";
 import { createCanvas } from "@napi-rs/canvas";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
@@ -20,6 +24,15 @@ import {
 export type ImportedQuestion = ExtractedQuestion & {
   answer?: string | null;
   points?: number;
+  taskType?: QuestionTaskType;
+  recognitionProvider?: ExtractionProvider;
+  recognitionModel?: string | null;
+  extractionBatch?: number | null;
+  interactionData?: {
+    matchingLeft?: string[];
+    matchingRight?: string[];
+    orderingItems?: string[];
+  } | null;
 };
 
 export type ImportedSource = {

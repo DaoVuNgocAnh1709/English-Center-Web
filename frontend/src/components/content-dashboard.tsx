@@ -52,11 +52,16 @@ type Question = {
   position: number;
   answer: string | null;
   kind: string;
+  taskType: string;
+  recognitionProvider: "LOCAL" | "GEMINI" | "LOCAL_FALLBACK" | "MANUAL";
+  recognitionModel: string | null;
+  extractionBatch: number | null;
   points: number;
   sourceLabel: string | null;
   section: string | null;
   content: string | null;
   options: unknown;
+  interactionData: unknown;
   sourcePage: number | null;
   recognitionConfidence: number;
   reviewFlags: unknown;
@@ -77,6 +82,11 @@ type Exam = {
   extractionStatus: "QUEUED" | "PROCESSING" | "READY" | "FAILED";
   extractionProgress: number;
   extractionError: string | null;
+  extractionProvider: "LOCAL" | "GEMINI" | "LOCAL_FALLBACK";
+  aiModel: string | null;
+  aiInputTokens: number | null;
+  aiOutputTokens: number | null;
+  aiFallbackReason: string | null;
   questions: Question[];
   source: { fileName: string; mimeType: string };
 };
@@ -112,7 +122,9 @@ type AttemptQuestion = {
   position: number;
   content: string | null;
   options: unknown;
+  interactionData: unknown;
   kind: string;
+  taskType: string;
   answer: string | null;
   points: number;
   sourcePage: number | null;
@@ -742,6 +754,28 @@ export function ContentDashboard({ role }: { role: Role }) {
                             {gradeLabel(exam.grade)} · {exam.source.mimeType === "application/pdf" ? `Trang ${exam.startPage}–${exam.endPage}` : exam.source.fileName} · {exam.questions.length} câu web ·{" "}
                             {statusLabels[exam.status]}
                           </p>
+                          {exam.extractionStatus === "READY" && (
+                            <span
+                              className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                exam.extractionProvider === "GEMINI"
+                                  ? "bg-emerald-50 text-emerald-700"
+                                  : exam.extractionProvider === "LOCAL_FALLBACK"
+                                    ? "bg-amber-50 text-amber-800"
+                                    : "bg-slate-100 text-slate-600"
+                              }`}
+                              title={
+                                exam.extractionProvider === "GEMINI"
+                                  ? `${exam.aiModel || "Gemini"} · ${exam.aiInputTokens || 0} token vào · ${exam.aiOutputTokens || 0} token ra`
+                                  : exam.aiFallbackReason || undefined
+                              }
+                            >
+                              {exam.extractionProvider === "GEMINI"
+                                ? "Gemini hỗ trợ"
+                                : exam.extractionProvider === "LOCAL_FALLBACK"
+                                  ? "Dự phòng nội bộ"
+                                  : "Nhận diện nội bộ"}
+                            </span>
+                          )}
                           {exam.extractionStatus !== "READY" && (
                             <p className={`mt-2 text-xs font-bold ${exam.extractionStatus === "FAILED" ? "text-red-700" : "text-blue-700"}`}>
                               {exam.extractionStatus === "FAILED"
@@ -1272,13 +1306,52 @@ function answeredCount(value: unknown) {
   ).length;
 }
 
-function comparableAnswer(value: string, kind: string) {
+function comparableAnswer(value: string, kind: string, taskType = "GENERAL") {
   const normalized = value.trim();
-  if (kind === "SINGLE_CHOICE") {
+  if (taskType === "MATCHING" || taskType === "ORDERING") {
+    try {
+      const parsed = JSON.parse(normalized);
+      if (Array.isArray(parsed)) return parsed.map(String).map((item) => item.trim().toLocaleLowerCase("vi")).join("|");
+      if (parsed && typeof parsed === "object")
+        return Object.entries(parsed as Record<string, unknown>)
+          .sort(([left], [right]) => Number(left) - Number(right))
+          .map(([, item]) => String(item).trim().toLocaleLowerCase("vi"))
+          .join("|");
+    } catch {}
+  }
+  if (kind === "SINGLE_CHOICE" || kind === "TRUE_FALSE") {
     const letter = normalized.match(/^([A-H])(?:[.)]|\s|$)/i)?.[1];
     if (letter) return letter.toUpperCase();
   }
+  if (kind === "MULTIPLE_CHOICE") {
+    try {
+      const parsed = JSON.parse(normalized);
+      if (Array.isArray(parsed)) return parsed.map(String).map((item) => item.trim().toUpperCase()).sort().join("|");
+    } catch {}
+    return normalized.split(/[,;|]+/).map((item) => item.trim().toUpperCase()).filter(Boolean).sort().join("|");
+  }
+  if (kind === "TRUE_FALSE") {
+    if (/^(true|t|đúng|dung|yes)$/i.test(normalized)) return "TRUE";
+    if (/^(false|f|sai|no)$/i.test(normalized)) return "FALSE";
+  }
   return normalized.toLocaleLowerCase("vi");
+}
+
+function formatAttemptResponse(question: AttemptQuestion, response: string) {
+  if (question.taskType === "MATCHING") {
+    try {
+      const parsed = JSON.parse(response) as Record<string, unknown>;
+      const left = questionInteractionData(question.interactionData).matchingLeft;
+      return left.map((item, index) => `${item} → ${String(parsed[String(index)] || "—")}`).join("; ");
+    } catch {}
+  }
+  if (question.taskType === "ORDERING") {
+    try {
+      const parsed = JSON.parse(response);
+      if (Array.isArray(parsed)) return parsed.map(String).join(" → ");
+    } catch {}
+  }
+  return response;
 }
 
 function formatDate(value: string) {
@@ -1321,8 +1394,8 @@ function AttemptReview({
           const automatic = question.kind !== "ESSAY" && !!question.answer;
           const correct =
             automatic &&
-            comparableAnswer(response, question.kind) ===
-              comparableAnswer(question.answer || "", question.kind);
+            comparableAnswer(response, question.kind, question.taskType) ===
+              comparableAnswer(question.answer || "", question.kind, question.taskType);
           return (
             <div
               key={question.position}
@@ -1381,7 +1454,7 @@ function AttemptReview({
                   )}
                   <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
                     <span className="font-semibold">Bài làm:</span>{" "}
-                    {selectedOption || response || "Chưa trả lời"}
+                    {selectedOption || formatAttemptResponse(question, response) || "Chưa trả lời"}
                   </p>
                 </div>
                 {attempt.status !== "DRAFT" && (
@@ -1573,6 +1646,42 @@ function questionReviewFlags(value: unknown) {
     : [];
 }
 
+function questionInteractionData(value: unknown) {
+  const item = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const list = (candidate: unknown) => Array.isArray(candidate)
+    ? candidate.filter((entry): entry is string => typeof entry === "string")
+    : [];
+  return {
+    matchingLeft: list(item.matchingLeft),
+    matchingRight: list(item.matchingRight),
+    orderingItems: list(item.orderingItems),
+  };
+}
+
+function structuredAnswerLines(answer: string | null, taskType: string) {
+  if (!answer) return "";
+  try {
+    const parsed = JSON.parse(answer);
+    if (taskType === "MATCHING" && parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      return Object.entries(parsed as Record<string, unknown>)
+        .sort(([left], [right]) => Number(left) - Number(right))
+        .map(([, item]) => String(item))
+        .join("\n");
+    if (taskType === "ORDERING" && Array.isArray(parsed)) return parsed.map(String).join("\n");
+  } catch {}
+  return answer;
+}
+
+function serializedAnswer(taskType: string, structured: unknown, plain: unknown) {
+  const lines = String(structured || "").split("\n").map((item) => item.trim()).filter(Boolean);
+  if (taskType === "MATCHING" && lines.length)
+    return JSON.stringify(Object.fromEntries(lines.map((item, index) => [String(index), item])));
+  if (taskType === "ORDERING" && lines.length) return JSON.stringify(lines);
+  return String(plain || "").trim();
+}
+
 function reviewFlagLabel(flag: string) {
   const labels: Record<string, string> = {
     LOW_CONFIDENCE: "Độ tin cậy thấp",
@@ -1585,8 +1694,66 @@ function reviewFlagLabel(flag: string) {
     MATCHING_CONVERTED: "Đã chuyển từ nối cột",
     COMPLEX_LAYOUT: "Bố cục phức tạp",
     LEARNED_CORRECTION: "Đã áp dụng bản sửa trước",
+    AI_EXTRACTED: "Gemini nhận diện",
+    NEEDS_REVIEW: "Cần kiểm tra",
+    TYPE_NORMALIZED: "Đã chuẩn hóa loại câu",
+    CHOICES_DEDUPLICATED: "Đã bỏ lựa chọn lặp",
+    INTERACTION_INCOMPLETE: "Thiếu dữ liệu kéo-thả",
   };
   return labels[flag] || "Cần rà soát";
+}
+
+const questionKindLabels: Record<string, string> = {
+  SINGLE_CHOICE: "Chọn một đáp án",
+  MULTIPLE_CHOICE: "Chọn nhiều đáp án",
+  TRUE_FALSE: "Đúng / Sai",
+  SHORT_TEXT: "Trả lời ngắn",
+  ESSAY: "Tự luận",
+};
+
+const questionTaskLabels: Record<string, string> = {
+  GENERAL: "Câu hỏi chung",
+  PRONUNCIATION: "Phát âm",
+  STRESS: "Trọng âm",
+  VOCABULARY: "Từ vựng",
+  SYNONYM: "Từ đồng nghĩa",
+  ANTONYM: "Từ trái nghĩa",
+  PHRASAL_VERB: "Cụm động từ",
+  GRAMMAR: "Ngữ pháp",
+  GAP_FILL: "Điền chỗ trống",
+  FUNCTIONAL_COMMUNICATION: "Giao tiếp",
+  PASSIVE_VOICE: "Câu bị động",
+  REPORTED_SPEECH: "Câu tường thuật",
+  CONDITIONAL_SENTENCE: "Câu điều kiện",
+  RELATIVE_CLAUSE: "Mệnh đề quan hệ",
+  TAG_QUESTION: "Câu hỏi đuôi",
+  WORD_FORM: "Dạng từ",
+  VERB_FORM: "Dạng động từ",
+  CLOZE: "Điền vào đoạn văn",
+  READING_COMPREHENSION: "Đọc hiểu",
+  MULTIPLE_SELECT: "Chọn nhiều",
+  TRUE_FALSE: "Đúng / Sai",
+  MATCHING: "Nối cặp",
+  ORDERING: "Sắp xếp",
+  ERROR_CORRECTION: "Tìm / sửa lỗi",
+  SENTENCE_COMBINATION: "Nối câu",
+  SENTENCE_REWRITE: "Viết lại câu",
+  SENTENCE_BUILDING: "Xây dựng câu",
+  TRANSLATION: "Dịch",
+  LISTENING: "Nghe hiểu",
+  DICTATION: "Nghe chép",
+  WRITING: "Viết",
+  OTHER: "Dạng khác",
+};
+
+const questionTaskOptions = Object.entries(questionTaskLabels);
+
+function recognitionProviderInfo(question: Question) {
+  const provider = question.recognitionProvider || "LOCAL";
+  if (provider === "GEMINI") return { label: "Gemini", className: "bg-violet-50 text-violet-700", detail: question.recognitionModel || "Gemini" };
+  if (provider === "LOCAL_FALLBACK") return { label: "Dự phòng nội bộ", className: "bg-amber-50 text-amber-800", detail: "Gemini không khả dụng; hệ thống đã tự chuyển sang bộ nhận diện nội bộ" };
+  if (provider === "MANUAL") return { label: "Thêm thủ công", className: "bg-blue-50 text-blue-700", detail: "Giáo viên tạo thủ công" };
+  return { label: "Nhận diện nội bộ", className: "bg-slate-100 text-slate-700", detail: "Bộ nhận diện không dùng AI" };
 }
 
 function AnswerEditor({
@@ -1609,6 +1776,7 @@ function AnswerEditor({
   const [bulk, setBulk] = useState("");
   const [filter, setFilter] = useState<"ALL" | "REVIEW" | "CONFIRMED">("ALL");
   const [showManual, setShowManual] = useState(false);
+  const [manualTaskType, setManualTaskType] = useState("GENERAL");
   const [activePosition, setActivePosition] = useState(exam.questions[0]?.position ?? 1);
   const unreviewed = exam.questions.filter((question) => !question.reviewedAt);
   const needsReview = unreviewed.filter(
@@ -1620,6 +1788,11 @@ function AnswerEditor({
   );
   const confirmed = exam.questions.filter((question) => Boolean(question.reviewedAt));
   const trustedUnreviewed = unreviewed.filter((question) => !needsReview.includes(question));
+  const providerCounts = exam.questions.reduce<Record<string, number>>((counts, question) => {
+    const provider = question.recognitionProvider || "LOCAL";
+    counts[provider] = (counts[provider] || 0) + 1;
+    return counts;
+  }, {});
   const visibleQuestions =
     filter === "REVIEW" ? needsReview : filter === "CONFIRMED" ? confirmed : exam.questions;
   const activeQuestion =
@@ -1647,6 +1820,14 @@ function AnswerEditor({
           <span className="block text-xs font-semibold text-slate-500">Đã kiểm tra</span>
           <strong className="mt-1 block text-lg text-emerald-700">{confirmed.length} câu</strong>
         </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs" aria-label="Nguồn nhận diện câu hỏi">
+        <span className="font-semibold text-slate-500">Nguồn xử lý:</span>
+        {providerCounts.GEMINI > 0 && <span className="rounded-full bg-violet-50 px-2.5 py-1 font-bold text-violet-700">Gemini {providerCounts.GEMINI}</span>}
+        {providerCounts.LOCAL_FALLBACK > 0 && <span className="rounded-full bg-amber-50 px-2.5 py-1 font-bold text-amber-800">Dự phòng {providerCounts.LOCAL_FALLBACK}</span>}
+        {providerCounts.LOCAL > 0 && <span className="rounded-full bg-slate-100 px-2.5 py-1 font-bold text-slate-700">Nội bộ {providerCounts.LOCAL}</span>}
+        {providerCounts.MANUAL > 0 && <span className="rounded-full bg-blue-50 px-2.5 py-1 font-bold text-blue-700">Thủ công {providerCounts.MANUAL}</span>}
       </div>
 
       {trustedUnreviewed.length > 0 && exam.status !== "PUBLISHED" && (
@@ -1773,14 +1954,21 @@ function AnswerEditor({
               const values = Object.fromEntries(new FormData(event.currentTarget));
               onQuestion({
                 position: Number(values.position),
-                answer: values.answer,
+                answer: serializedAnswer(String(values.taskType), values.structuredAnswer, values.answer),
                 kind: values.kind,
+                taskType: values.taskType,
+                interactionData: {
+                  matchingLeft: String(values.matchingLeft || "").split("\n").map((item) => item.trim()).filter(Boolean),
+                  matchingRight: String(values.matchingRight || "").split("\n").map((item) => item.trim()).filter(Boolean),
+                  orderingItems: String(values.orderingItems || "").split("\n").map((item) => item.trim()).filter(Boolean),
+                },
                 points: Number(values.points),
                 content: values.content,
                 section: values.section,
                 options: String(values.options || "").split("\n").map((option) => option.trim()).filter(Boolean),
               });
               event.currentTarget.reset();
+              setManualTaskType("GENERAL");
               setShowManual(false);
             }}
             className="mt-4 grid gap-3 rounded-xl bg-slate-50 p-4 sm:grid-cols-2"
@@ -1789,13 +1977,46 @@ function AnswerEditor({
             <label className="text-sm font-semibold">
               Loại câu hỏi
               <select name="kind" className="field-control mt-2 p-3">
-                <option value="SINGLE_CHOICE">Trắc nghiệm</option>
-                <option value="SHORT_TEXT">Điền ngắn</option>
+                <option value="SINGLE_CHOICE">Chọn một đáp án</option>
+                <option value="MULTIPLE_CHOICE">Chọn nhiều đáp án</option>
+                <option value="TRUE_FALSE">Đúng / Sai</option>
+                <option value="SHORT_TEXT">Trả lời ngắn</option>
                 <option value="ESSAY">Tự luận</option>
               </select>
             </label>
+            <label className="text-sm font-semibold">
+              Dạng bài
+              <select name="taskType" value={manualTaskType} onChange={(event) => setManualTaskType(event.target.value)} className="field-control mt-2 p-3">
+                {questionTaskOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            {manualTaskType === "MATCHING" && (
+              <>
+                <label className="text-sm font-semibold">
+                  Cột trái (mỗi dòng một mục)
+                  <textarea name="matchingLeft" required className="field-control mt-2 min-h-32 p-3" />
+                </label>
+                <label className="text-sm font-semibold">
+                  Cột phải (mỗi dòng một mục)
+                  <textarea name="matchingRight" required className="field-control mt-2 min-h-32 p-3" />
+                </label>
+              </>
+            )}
+            {manualTaskType === "ORDERING" && (
+              <label className="text-sm font-semibold sm:col-span-2">
+                Các mục cần sắp xếp (mỗi dòng một mục)
+                <textarea name="orderingItems" required className="field-control mt-2 min-h-32 p-3" />
+              </label>
+            )}
             <Field name="section" label="Tên phần" placeholder="Ví dụ: I. Pronunciation" />
-            <Field name="answer" label="Đáp án" placeholder="A hoặc nội dung đáp án" />
+            {manualTaskType === "MATCHING" || manualTaskType === "ORDERING" ? (
+              <label className="text-sm font-semibold sm:col-span-2">
+                {manualTaskType === "MATCHING" ? "Đáp án đúng theo thứ tự cột trái" : "Thứ tự đúng"} (mỗi dòng một mục)
+                <textarea name="structuredAnswer" className="field-control mt-2 min-h-28 p-3" placeholder="Có thể để trống để giáo viên chấm tay" />
+              </label>
+            ) : (
+              <Field name="answer" label="Đáp án" placeholder="A hoặc nội dung đáp án" />
+            )}
             <label className="text-sm font-semibold sm:col-span-2">
               Nội dung câu hỏi
               <textarea name="content" required className="field-control mt-2 min-h-24 p-3" />
@@ -1836,17 +2057,22 @@ function QuestionReviewCard({
   onDelete: () => void;
 }) {
   const [editing, setEditing] = useState(false);
+  const [editingTaskType, setEditingTaskType] = useState(question.taskType || "GENERAL");
   const options = questionOptions(question.options);
+  const interaction = questionInteractionData(question.interactionData);
   const flags = questionReviewFlags(question.reviewFlags);
   const confidence = Math.round((question.recognitionConfidence ?? 1) * 100);
   const reviewed = Boolean(question.reviewedAt);
+  const providerInfo = recognitionProviderInfo(question);
   const importantFlags = flags.filter((flag) =>
-    ["NO_OPTIONS", "POSSIBLE_VOCABULARY", "POSSIBLE_THEORY", "OCR_REVIEW", "COMPLEX_LAYOUT", "LEARNED_CORRECTION"].includes(flag),
+    ["NO_OPTIONS", "POSSIBLE_VOCABULARY", "POSSIBLE_THEORY", "OCR_REVIEW", "COMPLEX_LAYOUT", "LEARNED_CORRECTION", "NEEDS_REVIEW", "TYPE_NORMALIZED", "INTERACTION_INCOMPLETE"].includes(flag),
   );
   const currentBody = {
     position: question.position,
     answer: question.answer || "",
     kind: question.kind,
+    taskType: question.taskType || "GENERAL",
+    interactionData: interaction,
     points: question.points,
     content: question.content || "",
     section: question.section || "",
@@ -1874,10 +2100,15 @@ function QuestionReviewCard({
           </strong>
           {question.sourcePage && <span className="ml-2 text-xs text-slate-400">Trang {question.sourcePage}</span>}
         </div>
-        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-bold ${statusClass}`}>
-          {reviewed || confidence >= 68 ? <CheckCircle2 size={12} aria-hidden="true" /> : <AlertTriangle size={12} aria-hidden="true" />}
-          {statusLabel}{showTechnical ? ` · ${confidence}%` : ""}
-        </span>
+        <div className="flex flex-wrap justify-end gap-2">
+          <span className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-bold ${providerInfo.className}`} title={`${providerInfo.detail}${question.extractionBatch ? ` · cụm ${question.extractionBatch}` : ""}`}>
+            {providerInfo.label}
+          </span>
+          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-bold ${statusClass}`}>
+            {reviewed || confidence >= 68 ? <CheckCircle2 size={12} aria-hidden="true" /> : <AlertTriangle size={12} aria-hidden="true" />}
+            {statusLabel}{showTechnical ? ` · ${confidence}%` : ""}
+          </span>
+        </div>
       </div>
 
       {!editing ? (
@@ -1893,7 +2124,30 @@ function QuestionReviewCard({
               ))}
             </div>
           )}
+          {question.taskType === "MATCHING" && (
+            <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+              <div className="rounded-xl bg-slate-50 p-3">
+                <strong className="text-xs text-slate-500">Cột trái</strong>
+                <ol className="mt-2 space-y-1.5">{interaction.matchingLeft.map((item, index) => <li key={`${index}-${item}`}>{index + 1}. {item}</li>)}</ol>
+              </div>
+              <div className="rounded-xl bg-slate-50 p-3">
+                <strong className="text-xs text-slate-500">Cột phải</strong>
+                <ol className="mt-2 space-y-1.5">{interaction.matchingRight.map((item, index) => <li key={`${index}-${item}`}>{String.fromCharCode(65 + index)}. {item}</li>)}</ol>
+              </div>
+            </div>
+          )}
+          {question.taskType === "ORDERING" && interaction.orderingItems.length > 0 && (
+            <ol className="mt-3 space-y-2 text-sm">
+              {interaction.orderingItems.map((item, index) => <li key={`${index}-${item}`} className="rounded-lg bg-slate-50 px-3 py-2">{index + 1}. {item}</li>)}
+            </ol>
+          )}
           <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
+            <span className="rounded-full bg-blue-50 px-2 py-1 font-semibold text-blue-700">
+              {questionKindLabels[question.kind] || question.kind}
+            </span>
+            <span className="rounded-full bg-slate-100 px-2 py-1 font-semibold text-slate-700">
+              {questionTaskLabels[question.taskType] || "Dạng khác"}
+            </span>
             <span className="font-semibold text-slate-500">
               Đáp án: <strong className="text-[#092b4c]">{question.answer || "Chưa nhập"}</strong>
             </span>
@@ -1940,8 +2194,14 @@ function QuestionReviewCard({
             const values = Object.fromEntries(new FormData(event.currentTarget));
             onSave({
               position: question.position,
-              answer: values.answer,
+              answer: serializedAnswer(String(values.taskType), values.structuredAnswer, values.answer),
               kind: values.kind,
+              taskType: values.taskType,
+              interactionData: {
+                matchingLeft: String(values.matchingLeft || "").split("\n").map((item) => item.trim()).filter(Boolean),
+                matchingRight: String(values.matchingRight || "").split("\n").map((item) => item.trim()).filter(Boolean),
+                orderingItems: String(values.orderingItems || "").split("\n").map((item) => item.trim()).filter(Boolean),
+              },
               points: Number(values.points),
               content: values.content,
               section: values.section,
@@ -1958,11 +2218,37 @@ function QuestionReviewCard({
           <label className="text-xs font-semibold">
             Loại câu
             <select name="kind" defaultValue={question.kind} className="field-control mt-1 p-2 text-sm">
-              <option value="SINGLE_CHOICE">Trắc nghiệm</option>
-              <option value="SHORT_TEXT">Điền ngắn</option>
+              <option value="SINGLE_CHOICE">Chọn một đáp án</option>
+              <option value="MULTIPLE_CHOICE">Chọn nhiều đáp án</option>
+              <option value="TRUE_FALSE">Đúng / Sai</option>
+              <option value="SHORT_TEXT">Trả lời ngắn</option>
               <option value="ESSAY">Tự luận</option>
             </select>
           </label>
+          <label className="text-xs font-semibold">
+            Dạng bài
+            <select name="taskType" value={editingTaskType} onChange={(event) => setEditingTaskType(event.target.value)} className="field-control mt-1 p-2 text-sm">
+              {questionTaskOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+          </label>
+          {editingTaskType === "MATCHING" && (
+            <>
+              <label className="text-xs font-semibold">
+                Cột trái
+                <textarea name="matchingLeft" defaultValue={interaction.matchingLeft.join("\n")} required className="field-control mt-1 min-h-28 p-2 text-sm" />
+              </label>
+              <label className="text-xs font-semibold md:col-span-2">
+                Cột phải
+                <textarea name="matchingRight" defaultValue={interaction.matchingRight.join("\n")} required className="field-control mt-1 min-h-28 p-2 text-sm" />
+              </label>
+            </>
+          )}
+          {editingTaskType === "ORDERING" && (
+            <label className="text-xs font-semibold md:col-span-3">
+              Các mục cần sắp xếp
+              <textarea name="orderingItems" defaultValue={interaction.orderingItems.join("\n")} required className="field-control mt-1 min-h-28 p-2 text-sm" />
+            </label>
+          )}
           <label className="text-xs font-semibold md:col-span-3">
             Nội dung câu hỏi
             <textarea name="content" defaultValue={question.content || ""} required className="field-control mt-1 min-h-20 p-2 text-sm" />
@@ -1971,10 +2257,17 @@ function QuestionReviewCard({
             Các lựa chọn (mỗi dòng một lựa chọn)
             <textarea name="options" defaultValue={options.join("\n")} className="field-control mt-1 min-h-24 p-2 text-sm" />
           </label>
-          <label className="text-xs font-semibold">
-            Đáp án
-            <input name="answer" defaultValue={question.answer || ""} placeholder="A / nội dung đáp án" className="field-control mt-1 p-2 text-sm" />
-          </label>
+          {editingTaskType === "MATCHING" || editingTaskType === "ORDERING" ? (
+            <label className="text-xs font-semibold md:col-span-2">
+              {editingTaskType === "MATCHING" ? "Đáp án đúng theo thứ tự cột trái" : "Thứ tự đúng"} (mỗi dòng một mục)
+              <textarea name="structuredAnswer" defaultValue={structuredAnswerLines(question.answer, editingTaskType)} className="field-control mt-1 min-h-24 p-2 text-sm" placeholder="Để trống nếu giáo viên sẽ chấm tay" />
+            </label>
+          ) : (
+            <label className="text-xs font-semibold">
+              Đáp án
+              <input name="answer" defaultValue={question.answer || ""} placeholder="A / nội dung đáp án" className="field-control mt-1 p-2 text-sm" />
+            </label>
+          )}
           <label className="text-xs font-semibold">
             Điểm
             <input name="points" type="number" min="0.1" step="0.1" defaultValue={question.points} className="field-control mt-1 p-2 text-sm" />

@@ -8,15 +8,17 @@ import {
   AttemptStatus,
   ContentStatus,
   ExamAccess,
+  ExtractionProvider,
   Prisma,
   QuestionKind,
+  QuestionTaskType,
   Role,
   SchoolLevel,
   SourceImportStatus,
 } from "@prisma/client";
 import { PDFDocument } from "pdf-lib";
 import { createHash, randomUUID } from "crypto";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import { join } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import {
@@ -27,6 +29,10 @@ import {
   probeExamSource,
 } from "./question-importer";
 import { AntivirusService, MalwareDetectedError } from "./antivirus.service";
+import {
+  GeminiImportResult,
+  GeminiImportService,
+} from "./gemini-import.service";
 import {
   applyCorrectionMemory,
   questionSignature,
@@ -140,13 +146,71 @@ function manualScoresRecord(value: Prisma.JsonValue | null | undefined) {
   ) as Record<string, number>;
 }
 
+function cleanInteractionData(value: unknown): Prisma.InputJsonObject | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<string, unknown>;
+  const list = (candidate: unknown) =>
+    Array.isArray(candidate)
+      ? candidate.map(String).map((entry) => entry.trim().slice(0, 1_000)).filter(Boolean).slice(0, 40)
+      : [];
+  return {
+    matchingLeft: list(item.matchingLeft),
+    matchingRight: list(item.matchingRight),
+    orderingItems: list(item.orderingItems),
+  };
+}
+
 const hashGuestToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
-function normalizedScoringAnswer(value: string, kind: QuestionKind) {
+export function normalizedScoringAnswer(
+  value: string,
+  kind: QuestionKind,
+  taskType: QuestionTaskType = QuestionTaskType.GENERAL,
+) {
   const normalized = value.trim().normalize("NFC");
+  if (taskType === QuestionTaskType.MATCHING) {
+    try {
+      const parsed = JSON.parse(normalized) as unknown;
+      if (Array.isArray(parsed))
+        return parsed.map((item) => String(item).trim().toLocaleLowerCase("vi")).join("|");
+      if (parsed && typeof parsed === "object")
+        return Object.entries(parsed as Record<string, unknown>)
+          .sort(([left], [right]) => Number(left) - Number(right))
+          .map(([, item]) => String(item).trim().toLocaleLowerCase("vi"))
+          .join("|");
+    } catch {}
+  }
+  if (taskType === QuestionTaskType.ORDERING) {
+    try {
+      const parsed = JSON.parse(normalized) as unknown;
+      if (Array.isArray(parsed))
+        return parsed.map((item) => String(item).trim().toLocaleLowerCase("vi")).join("|");
+    } catch {}
+  }
   if (kind === QuestionKind.SINGLE_CHOICE) {
     const letter = normalized.match(/^([A-H])(?:[.)]|\s|$)/i)?.[1];
     if (letter) return letter.toUpperCase();
+  }
+  if (kind === QuestionKind.TRUE_FALSE) {
+    if (/^(true|t|đúng|yes|y)$/i.test(normalized)) return "TRUE";
+    if (/^(false|f|sai|no|n)$/i.test(normalized)) return "FALSE";
+  }
+  if (kind === QuestionKind.MULTIPLE_CHOICE) {
+    let values: string[] = [];
+    try {
+      const parsed = JSON.parse(normalized) as unknown;
+      if (Array.isArray(parsed)) values = parsed.map(String);
+    } catch {
+      values = normalized.split(/[;,|]+/);
+    }
+    return values
+      .map((item) => {
+        const clean = item.trim();
+        return clean.match(/^([A-H])(?:[.)]|\s|$)/i)?.[1]?.toUpperCase() || clean.toLocaleLowerCase();
+      })
+      .filter(Boolean)
+      .sort()
+      .join("|");
   }
   return normalized.toLocaleLowerCase();
 }
@@ -174,7 +238,152 @@ export class ContentService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly antivirus: AntivirusService,
+    private readonly geminiImport: GeminiImportService,
   ) {}
+
+  private async extractPdfWithGemini(
+    buffer: Buffer,
+    onProgress?: (completed: number, total: number) => Promise<void>,
+  ): Promise<GeminiImportResult> {
+    const pagesPerRequest = Math.max(
+      1,
+      Math.min(10, numberSetting("AI_IMPORT_PAGES_PER_REQUEST", 2)),
+    );
+    const overlap = Math.max(
+      0,
+      Math.min(pagesPerRequest - 1, numberSetting("AI_IMPORT_PAGE_OVERLAP", 1)),
+    );
+    try {
+      const source = await PDFDocument.load(buffer);
+      if (source.getPageCount() <= pagesPerRequest)
+        return this.geminiImport.extractPdf(buffer);
+
+      const successful: Extract<GeminiImportResult, { status: "SUCCESS" }>[] = [];
+      const fallbackReasons: string[] = [];
+      const offsets: number[] = [];
+      const step = Math.max(1, pagesPerRequest - overlap);
+      for (let offset = 0; offset < source.getPageCount(); offset += step) {
+        offsets.push(offset);
+        if (offset + pagesPerRequest >= source.getPageCount()) break;
+      }
+      for (const [batchIndex, offset] of offsets.entries()) {
+        const chunk = await PDFDocument.create();
+        const indices = Array.from(
+          { length: Math.min(pagesPerRequest, source.getPageCount() - offset) },
+          (_, index) => offset + index,
+        );
+        const pages = await chunk.copyPages(source, indices);
+        pages.forEach((page) => chunk.addPage(page));
+        const chunkBytes = Buffer.from(await chunk.save());
+        let result = await this.geminiImport.extractPdf(chunkBytes);
+        if (result.status !== "SUCCESS") {
+          try {
+            const local = await extractPdfWithOcr(chunkBytes, 1, indices.length);
+            fallbackReasons.push(`Cụm ${batchIndex + 1}: ${result.reason}`);
+            successful.push({
+              status: "SUCCESS",
+              model: result.model || process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+              questions: local.questions.map((question) => ({
+                ...question,
+                sourcePage: (question.sourcePage || 1) + offset,
+                extractionBatch: batchIndex + 1,
+                recognitionProvider: ExtractionProvider.LOCAL_FALLBACK,
+                recognitionModel: null,
+              })),
+              warnings: [
+                `Cụm ${batchIndex + 1} dùng nhận diện nội bộ vì Gemini không khả dụng.`,
+                ...local.warnings,
+              ],
+              usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            });
+            await onProgress?.(batchIndex + 1, offsets.length);
+            continue;
+          } catch {
+            return result;
+          }
+        }
+        const suspicious = result.questions.some(
+          (question) =>
+            (question.recognitionConfidence ?? 0) < 0.78 ||
+            question.reviewFlags?.includes("NO_OPTIONS"),
+        );
+        if (
+          suspicious &&
+          process.env.AI_IMPORT_REVIEW_ENABLED === "true"
+        ) {
+          const reviewed = await this.geminiImport.extractPdf(
+            chunkBytes,
+            {
+              model:
+                process.env.GEMINI_REVIEW_MODEL ||
+                process.env.GEMINI_MODEL ||
+                "gemini-3.5-flash-lite",
+            },
+          );
+          if (reviewed.status === "SUCCESS") {
+            const quality = (questions: ImportedQuestion[]) =>
+              questions.reduce(
+                (score, question) =>
+                  score +
+                  (question.recognitionConfidence ?? 0) -
+                  (question.reviewFlags?.includes("NO_OPTIONS") ? 1 : 0),
+                0,
+              );
+            if (quality(reviewed.questions) > quality(result.questions))
+              result = {
+                ...reviewed,
+                warnings: [
+                  ...reviewed.warnings,
+                  `Cụm ${batchIndex + 1} đã được kiểm tra lần hai vì có câu chưa chắc chắn.`,
+                ],
+              };
+          }
+        }
+        successful.push({
+          ...result,
+          questions: result.questions.map((question) => ({
+            ...question,
+            sourcePage: (question.sourcePage || 1) + offset,
+            extractionBatch: batchIndex + 1,
+          })),
+        });
+        await onProgress?.(batchIndex + 1, offsets.length);
+      }
+
+      const seen = new Set<string>();
+      const questions = successful
+        .flatMap((result) => result.questions)
+        .filter((question) => {
+          const key = `${question.sourcePage || 0}|${question.sourceLabel || ""}|${questionSignature(question)}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .slice(0, 200)
+        .map((question, index) => ({ ...question, position: index + 1 }));
+      return {
+        status: "SUCCESS",
+        model: successful[0]?.model || process.env.GEMINI_MODEL || "gemini-3.5-flash-lite",
+        questions,
+        warnings: [...new Set(successful.flatMap((result) => result.warnings))],
+        usage: {
+          inputTokens: successful.reduce((sum, result) => sum + result.usage.inputTokens, 0),
+          outputTokens: successful.reduce((sum, result) => sum + result.usage.outputTokens, 0),
+          totalTokens: successful.reduce((sum, result) => sum + result.usage.totalTokens, 0),
+        },
+        ...(fallbackReasons.length
+          ? { warnings: [...new Set([
+              ...successful.flatMap((result) => result.warnings),
+              ...fallbackReasons,
+            ])] }
+          : {}),
+      };
+    } catch {
+      // Unit tests and legacy rows can contain non-PDF placeholder bytes. The
+      // Gemini service still validates/falls back safely for those inputs.
+      return this.geminiImport.extractPdf(buffer);
+    }
+  }
 
   async uploadSource(file: Upload, userId: string) {
     const maxBytes = numberSetting("UPLOAD_MAX_FILE_MB", 15) * 1024 * 1024;
@@ -335,24 +544,110 @@ export class ContentService {
       },
     });
     if (!claimed.count) return false;
+    let extractionProvider: ExtractionProvider = ExtractionProvider.LOCAL;
+    let aiModel: string | null = null;
+    let aiInputTokens: number | null = null;
+    let aiOutputTokens: number | null = null;
+    let aiFallbackReason: string | null = null;
     try {
-      const extracted = next.source.mimeType === "application/pdf"
-        ? await withTimeout(
+      let extracted: { questions: ImportedQuestion[]; warnings: string[] };
+      if (next.source.mimeType === "application/pdf") {
+        // The exam file has already been cropped to the teacher-selected page
+        // range. Sending only that file reduces Gemini tokens and avoids
+        // extracting unrelated pages from the source document.
+        const croppedPdf = await readFile(join(root, next.fileKey));
+        const ai = await this.extractPdfWithGemini(
+          croppedPdf,
+          async (completed, total) => {
+            await this.prisma.exam.updateMany({
+              where: {
+                id: next.id,
+                extractionStatus: SourceImportStatus.PROCESSING,
+              },
+              data: {
+                extractionProgress: Math.min(
+                  80,
+                  30 + Math.round((completed / total) * 50),
+                ),
+                extractionWarnings: [
+                  `Đã xử lý cụm ${completed}/${total}; đang kiểm tra và ghép câu hỏi.`,
+                ],
+              },
+            });
+          },
+        );
+        if (ai.status === "SUCCESS") {
+          const usedLocalFallback = ai.questions.some(
+            (question) =>
+              question.recognitionProvider === ExtractionProvider.LOCAL_FALLBACK,
+          );
+          extractionProvider = usedLocalFallback
+            ? ExtractionProvider.LOCAL_FALLBACK
+            : ExtractionProvider.GEMINI;
+          aiModel = ai.model;
+          aiInputTokens = ai.usage.inputTokens;
+          aiOutputTokens = ai.usage.outputTokens;
+          aiFallbackReason = usedLocalFallback
+            ? "Một số cụm trang không dùng được Gemini và đã tự chuyển sang nhận diện nội bộ."
+            : null;
+          extracted = {
+            questions: ai.questions.map((question) => ({
+              ...question,
+              recognitionProvider:
+                question.recognitionProvider || ExtractionProvider.GEMINI,
+              recognitionModel:
+                question.recognitionProvider === ExtractionProvider.LOCAL_FALLBACK
+                  ? null
+                  : ai.model,
+              sourcePage: question.sourcePage
+                ? Math.min(
+                    next.endPage,
+                    Math.max(next.startPage, next.startPage + question.sourcePage - 1),
+                  )
+                : next.startPage,
+            })),
+            warnings: [...ai.warnings],
+          };
+        } else {
+          if (ai.status !== "DISABLED") {
+            extractionProvider = ExtractionProvider.LOCAL_FALLBACK;
+            aiModel = ai.model;
+            aiFallbackReason = ai.reason;
+          }
+          extracted = await withTimeout(
             extractPdfWithOcr(
               new Uint8Array(await readFile(join(root, next.source.fileKey))),
               next.startPage,
               next.endPage,
             ),
             numberSetting("IMPORT_TIMEOUT_MS", 180000),
-          )
-        : {
+          );
+          extracted.questions = extracted.questions.map((question) => ({
+            ...question,
+            recognitionProvider:
+              ai.status === "DISABLED"
+                ? ExtractionProvider.LOCAL
+                : ExtractionProvider.LOCAL_FALLBACK,
+            recognitionModel: null,
+          }));
+          if (ai.status !== "DISABLED") extracted.warnings.unshift(ai.reason);
+        }
+      } else {
+        extracted = {
             questions: Array.isArray(next.source.importDraft)
-              ? (next.source.importDraft as unknown as ImportedQuestion[])
+              ? (next.source.importDraft as unknown as ImportedQuestion[]).map(
+                  (question) => ({
+                    ...question,
+                    recognitionProvider: ExtractionProvider.LOCAL,
+                    recognitionModel: null,
+                  }),
+                )
               : [],
             warnings: Array.isArray(next.source.importWarnings)
               ? next.source.importWarnings.map(String)
               : [],
           };
+      }
       const correctionMemory = await this.prisma.recognitionCorrection.findMany({
         where: { sourceChecksum: next.source.checksum },
         select: { signature: true, action: true, correctedData: true },
@@ -368,21 +663,42 @@ export class ContentService {
         extracted.warnings.push(
           `Tệp nhận diện ${extracted.questions.length} câu; hệ thống chỉ nhập 200 câu đầu tiên cho một đề.`,
         );
-      const existingByPosition = new Map(
-        next.questions.map((question) => [question.position, question]),
+      const existingBySignature = new Map(
+        next.questions.map((question) => [questionSignature(question), question]),
       );
-      const questionData = extracted.questions.slice(0, 200).map((question) => ({
+      const existingBySource = new Map<string, typeof next.questions>();
+      for (const question of next.questions) {
+        const key = `${question.sourcePage || 0}|${question.sourceLabel || ""}|${question.kind}`;
+        existingBySource.set(key, [...(existingBySource.get(key) || []), question]);
+      }
+      const matchedExistingIds = new Set<string>();
+      const questionData = extracted.questions.slice(0, 200).map((question) => {
+        const sourceKey = `${question.sourcePage || 0}|${question.sourceLabel || ""}|${question.kind}`;
+        const sourceMatches = existingBySource.get(sourceKey) || [];
+        const existing =
+          existingBySignature.get(questionSignature(question)) ||
+          (sourceMatches.length === 1 ? sourceMatches[0] : undefined);
+        if (existing) matchedExistingIds.add(existing.id);
+        return {
         examId: next.id,
         position: question.position,
         kind: question.kind,
-        answer: existingByPosition.get(question.position)?.answer || question.answer || null,
-        points: existingByPosition.get(question.position)?.points || question.points || 1,
+        taskType: question.taskType || existing?.taskType || QuestionTaskType.GENERAL,
+        answer: existing?.answer || question.answer || null,
+        points: existing?.points || question.points || 1,
         sourceLabel: question.sourceLabel || null,
         section: question.section || null,
         content: question.content || `Câu ${question.position}`,
         options: question.options as Prisma.InputJsonValue,
+        interactionData: question.interactionData
+          ? question.interactionData as Prisma.InputJsonValue
+          : Prisma.JsonNull,
         sourcePage: question.sourcePage || null,
         recognitionConfidence: question.recognitionConfidence ?? 0.5,
+        recognitionProvider:
+          question.recognitionProvider || extractionProvider,
+        recognitionModel: question.recognitionModel || null,
+        extractionBatch: question.extractionBatch || null,
         reviewFlags: (question.reviewFlags ?? ["LEGACY_IMPORT", "LOW_CONFIDENCE"]) as Prisma.InputJsonValue,
         sourceBounds: question.sourceBounds
           ? (question.sourceBounds as Prisma.InputJsonValue)
@@ -390,27 +706,33 @@ export class ContentService {
         reviewedAt: question.reviewFlags?.includes("LEARNED_CORRECTION")
           ? new Date()
           : null as Date | null,
-      }));
+        };
+      });
       for (const existing of next.questions) {
         // Only teacher-confirmed/manual questions survive a fresh extraction.
         // Auto-detected rows that disappeared are stale false positives (for
         // example vocabulary entries or answer grids) and must be removed.
         if (
           existing.reviewedAt &&
-          !questionData.some((question) => question.position === existing.position)
+          !matchedExistingIds.has(existing.id)
         )
           questionData.push({
             examId: next.id,
-            position: existing.position,
+            position: questionData.length + 1,
             kind: existing.kind,
+            taskType: existing.taskType,
             answer: existing.answer,
             points: existing.points,
             sourceLabel: existing.sourceLabel,
             section: existing.section,
             content: existing.content || `Câu ${existing.position}`,
             options: (existing.options || []) as Prisma.InputJsonValue,
+            interactionData: existing.interactionData || Prisma.JsonNull,
             sourcePage: existing.sourcePage,
             recognitionConfidence: existing.recognitionConfidence,
+            recognitionProvider: existing.recognitionProvider,
+            recognitionModel: existing.recognitionModel,
+            extractionBatch: existing.extractionBatch,
             reviewFlags: (existing.reviewFlags || []) as Prisma.InputJsonValue,
             sourceBounds: existing.sourceBounds || Prisma.JsonNull,
             reviewedAt: existing.reviewedAt,
@@ -429,6 +751,11 @@ export class ContentService {
             extractionError: null,
             extractedAt: new Date(),
             extractionWarnings: extracted.warnings as Prisma.InputJsonValue,
+            extractionProvider,
+            aiModel,
+            aiInputTokens,
+            aiOutputTokens,
+            aiFallbackReason,
           },
         });
       });
@@ -443,6 +770,11 @@ export class ContentService {
           extractionProgress: 100,
           extractionError: message.slice(0, 500),
           extractionWarnings: ["Không thể hoàn tất trích xuất. Bạn có thể thử lại hoặc nhập câu thủ công."],
+          extractionProvider,
+          aiModel,
+          aiInputTokens,
+          aiOutputTokens,
+          aiFallbackReason,
         },
       });
     }
@@ -604,6 +936,9 @@ export class ContentService {
     const questionData = extracted.questions.slice(0, 200).map((question) => ({
       ...question,
       options: question.options as Prisma.InputJsonValue,
+      interactionData: question.interactionData
+        ? question.interactionData as Prisma.InputJsonValue
+        : Prisma.JsonNull,
       recognitionConfidence: question.recognitionConfidence ?? 0.5,
       reviewFlags: (question.reviewFlags ?? ["LEGACY_IMPORT", "LOW_CONFIDENCE"]) as Prisma.InputJsonValue,
       sourceBounds: question.sourceBounds
@@ -620,6 +955,7 @@ export class ContentService {
           section: null,
           content: `Câu ${position}`,
           options: [] as Prisma.InputJsonValue,
+          interactionData: Prisma.JsonNull,
           kind: /^[A-D]$/i.test(answer)
             ? QuestionKind.SINGLE_CHOICE
             : QuestionKind.SHORT_TEXT,
@@ -704,6 +1040,7 @@ export class ContentService {
             kind: /^[A-D]$/i.test(answer)
               ? QuestionKind.SINGLE_CHOICE
               : QuestionKind.SHORT_TEXT,
+            recognitionProvider: ExtractionProvider.MANUAL,
           },
         }),
       ),
@@ -720,10 +1057,16 @@ export class ContentService {
       position: number;
       answer?: string;
       kind?: QuestionKind;
+      taskType?: QuestionTaskType;
       points?: number;
       content?: string;
       section?: string;
       options?: string[];
+      interactionData?: {
+        matchingLeft?: string[];
+        matchingRight?: string[];
+        orderingItems?: string[];
+      } | null;
     },
     userId: string,
     role: Role,
@@ -743,17 +1086,20 @@ export class ContentService {
       points <= 0 ||
       points > 100 ||
       (body.kind && !Object.values(QuestionKind).includes(body.kind))
+      || (body.taskType && !Object.values(QuestionTaskType).includes(body.taskType))
     )
       throw new BadRequestException("Câu hỏi không hợp lệ.");
     const existing = await this.prisma.examQuestion.findUnique({
       where: { examId_position: { examId, position } },
     });
+    const interactionData = cleanInteractionData(body.interactionData);
     return this.prisma.$transaction(async (tx) => {
       const saved = await tx.examQuestion.upsert({
         where: { examId_position: { examId, position } },
         update: {
           answer: body.answer?.trim() || null,
-          kind: body.kind || QuestionKind.SINGLE_CHOICE,
+          kind: body.kind || undefined,
+          taskType: body.taskType || undefined,
           points,
           content: body.content?.trim().slice(0, 4000) || undefined,
           section: body.section?.trim().slice(0, 1000) || undefined,
@@ -762,6 +1108,7 @@ export class ContentService {
                 .map((option) => String(option).trim().slice(0, 1000))
                 .filter(Boolean) as Prisma.InputJsonValue)
             : undefined,
+          interactionData,
           recognitionConfidence: 1,
           reviewFlags: [],
           reviewedAt: new Date(),
@@ -771,6 +1118,7 @@ export class ContentService {
           position,
           answer: body.answer?.trim() || null,
           kind: body.kind || QuestionKind.SINGLE_CHOICE,
+          taskType: body.taskType || QuestionTaskType.GENERAL,
           points,
           sourceLabel: String(position),
           content: body.content?.trim().slice(0, 4000) || `Câu ${position}`,
@@ -780,7 +1128,9 @@ export class ContentService {
                 .map((option) => String(option).trim().slice(0, 1000))
                 .filter(Boolean)
             : []) as Prisma.InputJsonValue,
+          interactionData: interactionData || Prisma.JsonNull,
           recognitionConfidence: 1,
+          recognitionProvider: ExtractionProvider.MANUAL,
           reviewFlags: [],
           reviewedAt: new Date(),
         },
@@ -841,6 +1191,11 @@ export class ContentService {
         extractionError: null,
         extractedAt: null,
         extractionWarnings: ["Đang trích xuất lại câu hỏi trong hàng đợi nền."],
+        extractionProvider: ExtractionProvider.LOCAL,
+        aiModel: null,
+        aiInputTokens: null,
+        aiOutputTokens: null,
+        aiFallbackReason: null,
       },
       include: { questions: { orderBy: { position: "asc" } } },
     });
@@ -1044,8 +1399,10 @@ export class ContentService {
             section: true,
             content: true,
             options: true,
+            interactionData: true,
             sourcePage: true,
             kind: true,
+            taskType: true,
             points: true,
           },
           orderBy: { position: "asc" },
@@ -1078,6 +1435,7 @@ export class ContentService {
     questions: {
       position: number;
       kind: QuestionKind;
+      taskType: QuestionTaskType;
       answer: string | null;
       points: number;
     }[],
@@ -1107,8 +1465,8 @@ export class ContentService {
       }
       possible += question.points;
       const correct =
-        normalizedScoringAnswer(response, question.kind) ===
-        normalizedScoringAnswer(question.answer, question.kind);
+        normalizedScoringAnswer(response, question.kind, question.taskType) ===
+        normalizedScoringAnswer(question.answer, question.kind, question.taskType);
       if (correct) earned += question.points;
       return {
         position: question.position,
@@ -1338,7 +1696,9 @@ export class ContentService {
                 position: true,
                 content: true,
                 options: true,
+                interactionData: true,
                 kind: true,
+                taskType: true,
                 answer: true,
                 points: true,
                 sourcePage: true,
@@ -1456,6 +1816,7 @@ export class ContentService {
               select: {
                 position: true,
                 kind: true,
+                taskType: true,
                 answer: true,
                 points: true,
               },

@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
-import { QuestionKind } from "@prisma/client";
+import { QuestionKind, QuestionTaskType } from "@prisma/client";
 import { ImportedQuestion } from "./question-importer";
 
 export type QuestionSnapshot = {
   kind: QuestionKind;
+  taskType: QuestionTaskType;
   answer: string | null;
   points: number;
   section: string | null;
   content: string;
   options: string[];
+  interactionData: {
+    matchingLeft: string[];
+    matchingRight: string[];
+    orderingItems: string[];
+  };
 };
 
 export type CorrectionMemory = {
@@ -31,21 +37,36 @@ function stringOptions(value: unknown): string[] {
     : [];
 }
 
+function interactionSnapshot(value: unknown) {
+  const item = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return {
+    matchingLeft: stringOptions(item.matchingLeft),
+    matchingRight: stringOptions(item.matchingRight),
+    orderingItems: stringOptions(item.orderingItems),
+  };
+}
+
 export function snapshotQuestion(question: {
   kind?: QuestionKind | null;
+  taskType?: QuestionTaskType | null;
   answer?: string | null;
   points?: number | null;
   section?: string | null;
   content?: string | null;
   options?: unknown;
+  interactionData?: unknown;
 }): QuestionSnapshot {
   return {
     kind: question.kind || QuestionKind.SHORT_TEXT,
+    taskType: question.taskType || QuestionTaskType.GENERAL,
     answer: question.answer?.trim() || null,
     points: Number(question.points || 1),
     section: question.section?.trim() || null,
     content: question.content?.trim() || "",
     options: stringOptions(question.options),
+    interactionData: interactionSnapshot(question.interactionData),
   };
 }
 
@@ -55,9 +76,15 @@ export function questionSignature(question: Parameters<typeof snapshotQuestion>[
   // deliberately do not participate in the signature.
   const recognitionShape = {
     kind: snapshot.kind,
+    taskType: snapshot.taskType,
     section: normalized(snapshot.section),
     content: normalized(snapshot.content),
     options: snapshot.options.map(normalized),
+    interactionData: {
+      matchingLeft: snapshot.interactionData.matchingLeft.map(normalized),
+      matchingRight: snapshot.interactionData.matchingRight.map(normalized),
+      orderingItems: snapshot.interactionData.orderingItems.map(normalized),
+    },
   };
   return createHash("sha256").update(JSON.stringify(recognitionShape)).digest("hex");
 }
@@ -67,6 +94,8 @@ function isSnapshot(value: unknown): value is QuestionSnapshot {
   const item = value as Record<string, unknown>;
   return (
     Object.values(QuestionKind).includes(item.kind as QuestionKind) &&
+    (item.taskType === undefined ||
+      Object.values(QuestionTaskType).includes(item.taskType as QuestionTaskType)) &&
     typeof item.content === "string" &&
     Array.isArray(item.options)
   );
@@ -99,11 +128,13 @@ export function applyCorrectionMemory(
     return [{
       ...question,
       kind: corrected.kind,
+      taskType: corrected.taskType || question.taskType || QuestionTaskType.GENERAL,
       answer: corrected.answer,
       points: corrected.points,
       section: corrected.section,
       content: corrected.content,
       options: corrected.options,
+      interactionData: corrected.interactionData || question.interactionData || null,
       recognitionConfidence: 1,
       reviewFlags: ["LEARNED_CORRECTION"],
     }];

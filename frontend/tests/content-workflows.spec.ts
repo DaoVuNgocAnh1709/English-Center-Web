@@ -1,5 +1,46 @@
 import { expect, test } from "@playwright/test";
 
+test("matching and ordering questions support touch-friendly interactions", async ({ page }) => {
+  const exam = {
+    id: "interactive-exam",
+    title: "Đề tương tác",
+    summary: "Kiểm thử nối cặp và sắp xếp",
+    grade: 9,
+    durationMinutes: 20,
+    source: { fileName: "interactive.pdf", mimeType: "application/pdf" },
+    questions: [
+      {
+        position: 1, sourceLabel: "1", section: "Matching", content: "Match each word with its meaning.", options: [], sourcePage: 1,
+        kind: "SHORT_TEXT", taskType: "MATCHING", points: 1,
+        interactionData: { matchingLeft: ["artisan", "pottery"], matchingRight: ["a skilled worker", "objects made from clay"], orderingItems: [] },
+      },
+      {
+        position: 2, sourceLabel: "2", section: "Ordering", content: "Put the steps in order.", options: [], sourcePage: 1,
+        kind: "SHORT_TEXT", taskType: "ORDERING", points: 1,
+        interactionData: { matchingLeft: [], matchingRight: [], orderingItems: ["Shape the pot", "Mix the clay", "Fire it"] },
+      },
+    ],
+  };
+  await page.route("**/api/auth/me", (route) => route.fulfill({ status: 401, body: "{}" }));
+  await page.route("**/api/public-content/exams/interactive-test", (route) => route.fulfill({ json: exam }));
+  await page.route("**/api/public-content/exams/interactive-exam/attempts/start", (route) => route.fulfill({
+    json: { attemptId: "attempt-1", guestToken: "guest-1", participantName: "Khách test", status: "DRAFT", answers: {}, savedAt: new Date().toISOString() },
+  }));
+  await page.route("**/api/public-content/exams/interactive-exam/attempts/attempt-1", (route) => route.fulfill({ json: { ok: true } }));
+
+  await page.goto("/luyen-de/interactive-test");
+  await page.getByLabel("Họ và tên").fill("Khách test");
+  await page.getByRole("button", { name: "Bắt đầu làm bài" }).click();
+
+  await page.getByRole("button", { name: /a skilled worker/ }).click();
+  await page.getByRole("button", { name: "Chọn đáp án cho mục 1" }).click();
+  await expect(page.getByRole("button", { name: /Mục 1 đã nối với a skilled worker/ })).toBeVisible();
+
+  await page.getByRole("button", { name: "Đưa mục 2 lên" }).click();
+  await expect(page.locator("#question-2 li").first()).toContainText("Mix the clay");
+  await expect(page.getByText("Đã trả lời 2/2 câu")).toBeVisible();
+});
+
 test("public exam page shows filters and does not expose answer keys", async ({
   page,
   request,

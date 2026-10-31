@@ -59,8 +59,45 @@ enum ExamAccess {
 
 enum QuestionKind {
   SINGLE_CHOICE
+  MULTIPLE_CHOICE
+  TRUE_FALSE
   SHORT_TEXT
   ESSAY
+}
+
+enum QuestionTaskType {
+  GENERAL
+  PRONUNCIATION
+  STRESS
+  VOCABULARY
+  SYNONYM
+  ANTONYM
+  PHRASAL_VERB
+  GRAMMAR
+  GAP_FILL
+  FUNCTIONAL_COMMUNICATION
+  PASSIVE_VOICE
+  REPORTED_SPEECH
+  CONDITIONAL_SENTENCE
+  RELATIVE_CLAUSE
+  TAG_QUESTION
+  WORD_FORM
+  VERB_FORM
+  CLOZE
+  READING_COMPREHENSION
+  MULTIPLE_SELECT
+  TRUE_FALSE
+  MATCHING
+  ORDERING
+  ERROR_CORRECTION
+  SENTENCE_COMBINATION
+  SENTENCE_REWRITE
+  SENTENCE_BUILDING
+  TRANSLATION
+  LISTENING
+  DICTATION
+  WRITING
+  OTHER
 }
 
 enum ApplicationStatus {
@@ -84,6 +121,13 @@ enum SourceImportStatus {
   READY
   FAILED
   QUARANTINED
+}
+
+enum ExtractionProvider {
+  LOCAL
+  GEMINI
+  LOCAL_FALLBACK
+  MANUAL
 }
 
 model User {
@@ -184,10 +228,10 @@ model Material {
 }
 
 model ExamSource {
-  id             String   @id @default(cuid())
+  id             String             @id @default(cuid())
   fileKey        String
   fileName       String
-  mimeType       String   @default("application/pdf")
+  mimeType       String             @default("application/pdf")
   pageCount      Int
   sizeBytes      Int
   checksum       String
@@ -199,59 +243,69 @@ model ExamSource {
   importDraft    Json?
   importWarnings Json?
   uploadedById   String
-  uploadedBy     User     @relation(fields: [uploadedById], references: [id])
+  uploadedBy     User               @relation(fields: [uploadedById], references: [id])
   exams          Exam[]
-  createdAt      DateTime @default(now())
+  createdAt      DateTime           @default(now())
 
   @@index([status, createdAt])
   @@index([uploadedById, checksum])
 }
 
 model Exam {
-  id                 String         @id @default(cuid())
-  slug               String         @unique
+  id                 String             @id @default(cuid())
+  slug               String             @unique
   title              String
-  summary            String         @default("")
+  summary            String             @default("")
   schoolLevel        SchoolLevel
   grade              Int
-  durationMinutes    Int            @default(45)
-  status             ContentStatus  @default(DRAFT)
-  access             ExamAccess     @default(PUBLIC)
+  durationMinutes    Int                @default(45)
+  status             ContentStatus      @default(DRAFT)
+  access             ExamAccess         @default(PUBLIC)
   sourceId           String
-  source             ExamSource     @relation(fields: [sourceId], references: [id])
+  source             ExamSource         @relation(fields: [sourceId], references: [id])
   startPage          Int
   endPage            Int
   fileKey            String
   createdById        String
-  createdBy          User           @relation(fields: [createdById], references: [id])
+  createdBy          User               @relation(fields: [createdById], references: [id])
   questions          ExamQuestion[]
   attempts           ExamAttempt[]
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
   extractedAt        DateTime?
   extractionWarnings Json?
   extractionStatus   SourceImportStatus @default(READY)
   extractionProgress Int                @default(100)
   extractionError    String?
+  extractionProvider ExtractionProvider @default(LOCAL)
+  aiModel            String?
+  aiInputTokens      Int?
+  aiOutputTokens     Int?
+  aiFallbackReason   String?
 
   @@index([status, schoolLevel, grade])
   @@index([extractionStatus, createdAt])
 }
 
 model ExamQuestion {
-  id                    String       @id @default(cuid())
+  id                    String             @id @default(cuid())
   examId                String
-  exam                  Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  exam                  Exam               @relation(fields: [examId], references: [id], onDelete: Cascade)
   position              Int
-  kind                  QuestionKind @default(SINGLE_CHOICE)
+  kind                  QuestionKind       @default(SINGLE_CHOICE)
+  taskType              QuestionTaskType   @default(GENERAL)
   answer                String?
-  points                Float        @default(1)
+  points                Float              @default(1)
   sourceLabel           String?
   section               String?
   content               String?
   options               Json?
+  interactionData       Json?
   sourcePage            Int?
-  recognitionConfidence Float        @default(1)
+  recognitionConfidence Float              @default(1)
+  recognitionProvider   ExtractionProvider @default(LOCAL)
+  recognitionModel      String?
+  extractionBatch       Int?
   reviewFlags           Json?
   sourceBounds          Json?
   reviewedAt            DateTime?

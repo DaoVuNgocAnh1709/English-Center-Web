@@ -15,7 +15,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor, FilesInterceptor } from "@nestjs/platform-express";
-import { ContentStatus, Role, SchoolLevel } from "@prisma/client";
+import { ContentStatus, QuestionKind, QuestionTaskType, Role, SchoolLevel } from "@prisma/client";
 import { Response, Request } from "express";
 import { CurrentUser } from "../auth/current-user.decorator";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
@@ -153,11 +153,17 @@ export class StaffContentController {
     body: {
       position: number;
       answer?: string;
-      kind?: "SINGLE_CHOICE" | "SHORT_TEXT" | "ESSAY";
+      kind?: QuestionKind;
+      taskType?: QuestionTaskType;
       points?: number;
       content?: string;
       section?: string;
       options?: string[];
+      interactionData?: {
+        matchingLeft?: string[];
+        matchingRight?: string[];
+        orderingItems?: string[];
+      } | null;
     },
     @CurrentUser() user: AccessPayload,
   ) {

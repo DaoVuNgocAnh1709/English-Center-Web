@@ -64,6 +64,19 @@ Mở `http://localhost:8080`.
 
 Email và mật khẩu của học viên, giáo viên và quản trị viên được đọc từ `.env` khi chạy seed. Không ghi thông tin đăng nhập thật trong mã nguồn, README hoặc giao diện đăng nhập. File `.env` đã được Git bỏ qua; `.env.example` chỉ chứa placeholder.
 
+## Nhận diện đề bằng Gemini (tùy chọn)
+
+Tạo API key trong Google AI Studio rồi chỉ điền key ở backend trong `.env`:
+
+```env
+AI_IMPORT_ENABLED=true
+GEMINI_API_KEY=your-server-side-key
+GEMINI_MODEL=gemini-3.5-flash-lite
+GEMINI_THINKING_LEVEL=minimal
+```
+
+Khởi động lại backend bằng `docker compose up -d --force-recreate backend`. Khi không có key, tắt AI, hết quota (HTTP 429), quá thời gian hoặc Gemini trả dữ liệu không hợp lệ, hệ thống tự dùng lại OCR/bộ nhận diện nội bộ. API key không được đặt trong biến `NEXT_PUBLIC_*` hoặc mã frontend.
+
 ## Kiểm tra
 
 ```bash

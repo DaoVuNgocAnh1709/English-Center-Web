@@ -10,6 +10,9 @@ import {
   Eye,
   ExternalLink,
   FileText,
+  GripVertical,
+  ChevronUp,
+  ChevronDown,
   ListChecks,
   LogIn,
   RotateCcw,
@@ -25,8 +28,10 @@ type Question = {
   section: string | null;
   content: string | null;
   options: unknown;
+  interactionData: unknown;
   sourcePage: number | null;
-  kind: "SINGLE_CHOICE" | "SHORT_TEXT" | "ESSAY";
+  kind: "SINGLE_CHOICE" | "MULTIPLE_CHOICE" | "TRUE_FALSE" | "SHORT_TEXT" | "ESSAY";
+  taskType: string;
   points: number;
 };
 type Exam = {
@@ -66,6 +71,21 @@ type StartResponse = Attempt & {
 };
 
 const api = process.env.NEXT_PUBLIC_API_URL || "/api";
+
+const taskTypeLabels: Record<string, string> = {
+  PRONUNCIATION: "Phát âm", STRESS: "Trọng âm", VOCABULARY: "Từ vựng",
+  SYNONYM: "Từ đồng nghĩa", ANTONYM: "Từ trái nghĩa", PHRASAL_VERB: "Cụm động từ",
+  GRAMMAR: "Ngữ pháp", GAP_FILL: "Điền chỗ trống", FUNCTIONAL_COMMUNICATION: "Giao tiếp",
+  PASSIVE_VOICE: "Câu bị động", REPORTED_SPEECH: "Câu tường thuật",
+  CONDITIONAL_SENTENCE: "Câu điều kiện", RELATIVE_CLAUSE: "Mệnh đề quan hệ", TAG_QUESTION: "Câu hỏi đuôi",
+  WORD_FORM: "Dạng từ", VERB_FORM: "Dạng động từ",
+  CLOZE: "Điền vào đoạn văn", READING_COMPREHENSION: "Đọc hiểu",
+  MULTIPLE_SELECT: "Chọn nhiều", TRUE_FALSE: "Đúng / Sai", MATCHING: "Nối cặp",
+  ORDERING: "Sắp xếp", ERROR_CORRECTION: "Tìm / sửa lỗi",
+  SENTENCE_COMBINATION: "Nối câu", SENTENCE_REWRITE: "Viết lại câu",
+  SENTENCE_BUILDING: "Xây dựng câu", TRANSLATION: "Dịch", LISTENING: "Nghe hiểu",
+  DICTATION: "Nghe chép", WRITING: "Viết", OTHER: "Dạng khác", GENERAL: "Câu hỏi chung",
+};
 
 export default function ExamPage() {
   const params = useParams<{ slug: string }>();
@@ -545,16 +565,34 @@ function QuestionCard({
       <p className="mt-3 whitespace-pre-wrap text-sm font-semibold leading-7 text-[#172b3e] md:text-[15px]">
         {question.content || `Câu ${question.position}`}
       </p>
+      {question.taskType && question.taskType !== "GENERAL" && (
+        <span className="mt-3 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
+          {taskTypeLabels[question.taskType] || "Dạng khác"}
+        </span>
+      )}
       {question.sourcePage && (
         <p className="mt-1 text-[11px] text-slate-400">
           Trang PDF {question.sourcePage}
         </p>
       )}
-      {question.kind === "SINGLE_CHOICE" && options.length ? (
+      {question.taskType === "MATCHING" && matchingData(question).left.length > 1 && matchingData(question).right.length > 1 ? (
+        <MatchingInteraction
+          question={question}
+          answer={answer}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      ) : question.taskType === "ORDERING" && orderingItems(question).length > 1 ? (
+        <OrderingInteraction
+          question={question}
+          answer={answer}
+          disabled={disabled}
+          onChange={onChange}
+        />
+      ) : (question.kind === "SINGLE_CHOICE" || question.kind === "TRUE_FALSE") && options.length ? (
         <div className="mt-5 grid gap-3 md:grid-cols-2">
           {options.map((option) => {
-            const value =
-              option.match(/^([A-H])[.)]/i)?.[1]?.toUpperCase() || option;
+            const value = choiceValue(option);
             return (
               <label
                 key={option}
@@ -567,6 +605,31 @@ function QuestionCard({
                   checked={answer === value}
                   disabled={disabled}
                   onChange={() => onChange(value)}
+                  className="mt-1 accent-[#d91f2a]"
+                />
+                <span>{option}</span>
+              </label>
+            );
+          })}
+        </div>
+      ) : question.kind === "MULTIPLE_CHOICE" && options.length ? (
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          {options.map((option) => {
+            const value = choiceValue(option);
+            const selected = multipleAnswers(answer).includes(value);
+            return (
+              <label key={option} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 text-sm leading-6 transition-colors ${selected ? "border-[#123d68] bg-[#edf3f8]" : "border-slate-200 bg-white hover:border-slate-300"}`}>
+                <input
+                  type="checkbox"
+                  value={value}
+                  checked={selected}
+                  disabled={disabled}
+                  onChange={() => {
+                    const next = selected
+                      ? multipleAnswers(answer).filter((item) => item !== value)
+                      : [...multipleAnswers(answer), value];
+                    onChange(JSON.stringify(next.sort()));
+                  }}
                   className="mt-1 accent-[#d91f2a]"
                 />
                 <span>{option}</span>
@@ -606,6 +669,188 @@ function QuestionCard({
         </p>
       )}
     </article>
+  );
+}
+
+function interactionRecord(question: Question) {
+  return question.interactionData && typeof question.interactionData === "object" && !Array.isArray(question.interactionData)
+    ? question.interactionData as Record<string, unknown>
+    : {};
+}
+
+function interactionList(value: unknown) {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function matchingData(question: Question) {
+  const data = interactionRecord(question);
+  return {
+    left: interactionList(data.matchingLeft),
+    right: interactionList(data.matchingRight),
+  };
+}
+
+function orderingItems(question: Question) {
+  return interactionList(interactionRecord(question).orderingItems);
+}
+
+function matchingAnswers(value: string) {
+  if (!value.trim()) return {} as Record<string, string>;
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      return Object.fromEntries(Object.entries(parsed).map(([key, item]) => [key, String(item)]));
+  } catch {}
+  return {} as Record<string, string>;
+}
+
+function MatchingInteraction({
+  question,
+  answer,
+  disabled,
+  onChange,
+  compact = false,
+}: {
+  question: Question;
+  answer: string;
+  disabled: boolean;
+  onChange: (answer: string) => void;
+  compact?: boolean;
+}) {
+  const { left, right } = matchingData(question);
+  const assigned = matchingAnswers(answer);
+  const [selected, setSelected] = useState<string | null>(null);
+  const assign = (index: number, item: string) => {
+    if (disabled) return;
+    const next = Object.fromEntries(
+      Object.entries(assigned).filter(([key, value]) => key === String(index) || value !== item),
+    );
+    next[String(index)] = item;
+    onChange(JSON.stringify(next));
+    setSelected(null);
+  };
+  const clear = (index: number) => {
+    const next = { ...assigned };
+    delete next[String(index)];
+    onChange(Object.keys(next).length ? JSON.stringify(next) : "");
+  };
+  return (
+    <div className={`${compact ? "mt-3" : "mt-5"}`}>
+      <p className="text-xs leading-5 text-slate-500">
+        Kéo một mục ở ngân hàng đáp án vào ô tương ứng, hoặc chạm đáp án rồi chạm ô cần nối.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2" aria-label="Ngân hàng đáp án">
+        {right.map((item, index) => {
+          const used = Object.values(assigned).includes(item);
+          return (
+            <button
+              key={`${index}-${item}`}
+              type="button"
+              draggable={!disabled}
+              disabled={disabled}
+              aria-pressed={selected === item}
+              onDragStart={(event) => event.dataTransfer.setData("text/plain", item)}
+              onClick={() => setSelected(selected === item ? null : item)}
+              className={`min-h-10 rounded-lg border px-3 py-2 text-left text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#123d68] ${selected === item ? "border-[#123d68] bg-[#123d68] text-white" : used ? "border-slate-200 bg-slate-100 text-slate-500" : "border-slate-300 bg-white text-[#17324d] hover:border-[#123d68]"}`}
+            >
+              <span className="mr-2 text-xs opacity-70">{String.fromCharCode(65 + index)}</span>{item}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-4 space-y-2">
+        {left.map((item, index) => (
+          <div key={`${index}-${item}`} className="grid items-stretch gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,.9fr)]">
+            <div className="rounded-lg bg-slate-50 px-3 py-3 text-sm font-semibold leading-6 text-[#172b3e]">
+              {index + 1}. {item}
+            </div>
+            <button
+              type="button"
+              disabled={disabled}
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => {
+                event.preventDefault();
+                const itemValue = event.dataTransfer.getData("text/plain");
+                if (itemValue) assign(index, itemValue);
+              }}
+              onClick={() => selected ? assign(index, selected) : assigned[String(index)] && clear(index)}
+              className={`min-h-12 rounded-lg border border-dashed px-3 py-2 text-left text-sm transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#123d68] ${assigned[String(index)] ? "border-[#123d68] bg-[#edf3f8] font-semibold text-[#092b4c]" : selected ? "border-[#123d68] bg-white text-[#123d68]" : "border-slate-300 bg-white text-slate-400"}`}
+              aria-label={assigned[String(index)] ? `Mục ${index + 1} đã nối với ${assigned[String(index)]}. Nhấn để bỏ nối.` : `Chọn đáp án cho mục ${index + 1}`}
+            >
+              {assigned[String(index)] || (selected ? "Chạm để đặt đáp án đã chọn" : "Thả hoặc chọn đáp án")}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function OrderingInteraction({
+  question,
+  answer,
+  disabled,
+  onChange,
+  compact = false,
+}: {
+  question: Question;
+  answer: string;
+  disabled: boolean;
+  onChange: (answer: string) => void;
+  compact?: boolean;
+}) {
+  const initial = orderingItems(question);
+  let parsed: string[] = [];
+  try {
+    const value = JSON.parse(answer || "[]");
+    if (Array.isArray(value)) parsed = value.map(String);
+  } catch {}
+  const items = parsed.length === initial.length ? parsed : initial;
+  const commit = (next: string[]) => onChange(JSON.stringify(next));
+  const move = (from: number, to: number) => {
+    if (disabled || from === to || to < 0 || to >= items.length) return;
+    const next = [...items];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    commit(next);
+  };
+  return (
+    <div className={`${compact ? "mt-3" : "mt-5"}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs leading-5 text-slate-500">Kéo các mục hoặc dùng nút lên/xuống để tạo đúng thứ tự.</p>
+        {!answer && !disabled && (
+          <button type="button" onClick={() => commit(items)} className="text-xs font-bold text-[#123d68] underline underline-offset-4">
+            Giữ thứ tự hiện tại
+          </button>
+        )}
+      </div>
+      <ol className="mt-3 space-y-2">
+        {items.map((item, index) => (
+          <li
+            key={`${index}-${item}`}
+            draggable={!disabled}
+            onDragStart={(event) => event.dataTransfer.setData("text/plain", String(index))}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault();
+              move(Number(event.dataTransfer.getData("text/plain")), index);
+            }}
+            className="flex min-h-12 items-center gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2"
+          >
+            <GripVertical size={18} className="shrink-0 text-slate-400" aria-hidden="true" />
+            <span className="grid size-7 shrink-0 place-items-center rounded-full bg-[#edf3f8] text-xs font-extrabold text-[#123d68]">{index + 1}</span>
+            <span className="min-w-0 flex-1 text-sm font-semibold leading-6 text-[#172b3e]">{item}</span>
+            {!disabled && (
+              <span className="flex shrink-0 gap-1">
+                <button type="button" onClick={() => move(index, index - 1)} disabled={index === 0} className="grid size-9 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-25" aria-label={`Đưa mục ${index + 1} lên`}><ChevronUp size={17} /></button>
+                <button type="button" onClick={() => move(index, index + 1)} disabled={index === items.length - 1} className="grid size-9 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-25" aria-label={`Đưa mục ${index + 1} xuống`}><ChevronDown size={17} /></button>
+              </span>
+            )}
+          </li>
+        ))}
+      </ol>
+      {!answer && <p className="mt-2 text-xs font-semibold text-amber-700">Chưa ghi nhận câu trả lời.</p>}
+    </div>
   );
 }
 
@@ -726,8 +971,41 @@ function choiceLetter(value: string) {
     ?.toUpperCase();
 }
 
+function choiceValue(option: string) {
+  return choiceLetter(option) || option.trim();
+}
+
+function multipleAnswers(value: string) {
+  if (!value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map(String);
+  } catch {}
+  return value.split(/[,;|]+/).map((item) => item.trim()).filter(Boolean);
+}
+
 function answerText(question: Question, answer: string) {
   const normalized = answer.trim();
+  if (question.taskType === "MATCHING") {
+    const assigned = matchingAnswers(answer);
+    const { left } = matchingData(question);
+    if (!Object.keys(assigned).length) return "Chưa trả lời";
+    return left.map((item, index) => `${item} → ${assigned[String(index)] || "—"}`).join("; ");
+  }
+  if (question.taskType === "ORDERING") {
+    try {
+      const parsed = JSON.parse(answer);
+      if (Array.isArray(parsed) && parsed.length) return parsed.map(String).join(" → ");
+    } catch {}
+    return "Chưa trả lời";
+  }
+  if (question.kind === "MULTIPLE_CHOICE") {
+    const selected = multipleAnswers(answer);
+    if (!selected.length) return "Chưa trả lời";
+    return selected
+      .map((value) => questionOptions(question).find((option) => choiceValue(option) === value) || value)
+      .join("; ");
+  }
   const answerLetter = choiceLetter(normalized);
   return (
     questionOptions(question).find(
@@ -783,10 +1061,13 @@ function AttemptDetailModal({
                   {questionOptions(question).length > 0 && (
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
                       {questionOptions(question).map((option) => {
-                        const letter = choiceLetter(option) || option;
-                        const chosen = choiceLetter(response) === letter;
-                        const correct =
-                          choiceLetter(detail?.correctAnswer || "") === letter;
+                        const value = choiceValue(option);
+                        const chosen = question.kind === "MULTIPLE_CHOICE"
+                          ? multipleAnswers(response).includes(value)
+                          : choiceValue(response) === value;
+                        const correct = question.kind === "MULTIPLE_CHOICE"
+                          ? multipleAnswers(detail?.correctAnswer || "").includes(value)
+                          : choiceValue(detail?.correctAnswer || "") === value;
                         return (
                           <div
                             key={option}
@@ -1020,12 +1301,28 @@ function PdfAnswerSheet({
         <h2 className="text-lg font-extrabold text-[#092b4c]">Phiếu trả lời</h2>
         <div className="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-2">
           {exam.questions.map((question) => (
-            <label
+            <div
               key={question.position}
               className="block rounded-xl border border-slate-200 p-3 text-sm font-semibold"
             >
               <span className="mb-2 block">Câu {question.position}</span>
-              {question.kind === "SINGLE_CHOICE" ? (
+              {question.taskType === "MATCHING" && matchingData(question).left.length > 1 ? (
+                <MatchingInteraction
+                  compact
+                  question={question}
+                  answer={answers[question.position] || ""}
+                  disabled={!!result}
+                  onChange={(answer) => setAnswers((current) => ({ ...current, [question.position]: answer }))}
+                />
+              ) : question.taskType === "ORDERING" && orderingItems(question).length > 1 ? (
+                <OrderingInteraction
+                  compact
+                  question={question}
+                  answer={answers[question.position] || ""}
+                  disabled={!!result}
+                  onChange={(answer) => setAnswers((current) => ({ ...current, [question.position]: answer }))}
+                />
+              ) : question.kind === "SINGLE_CHOICE" || question.kind === "TRUE_FALSE" ? (
                 <select
                   disabled={!!result}
                   value={answers[question.position] || ""}
@@ -1038,12 +1335,35 @@ function PdfAnswerSheet({
                   className="field-control p-2"
                 >
                   <option value="">Chưa chọn</option>
-                  {["A", "B", "C", "D"].map((letter) => (
-                    <option key={letter} value={letter}>
-                      {letter}
+                  {questionOptions(question).map((option) => (
+                    <option key={option} value={choiceValue(option)}>
+                      {option}
                     </option>
                   ))}
                 </select>
+              ) : question.kind === "MULTIPLE_CHOICE" ? (
+                <div className="space-y-2">
+                  {questionOptions(question).map((option) => {
+                    const value = choiceValue(option);
+                    const selected = multipleAnswers(answers[question.position] || "").includes(value);
+                    return (
+                      <label key={option} className="flex items-start gap-2 text-xs font-medium">
+                        <input
+                          type="checkbox"
+                          disabled={!!result}
+                          checked={selected}
+                          onChange={() => setAnswers((current) => {
+                            const previous = multipleAnswers(current[question.position] || "");
+                            const next = selected ? previous.filter((item) => item !== value) : [...previous, value];
+                            return { ...current, [question.position]: JSON.stringify(next.sort()) };
+                          })}
+                          className="mt-0.5 accent-[#d91f2a]"
+                        />
+                        <span>{option}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               ) : (
                 <textarea
                   disabled={!!result}
@@ -1057,7 +1377,7 @@ function PdfAnswerSheet({
                   className="field-control min-h-16 p-2"
                 />
               )}
-            </label>
+            </div>
           ))}
         </div>
         {!result && (
