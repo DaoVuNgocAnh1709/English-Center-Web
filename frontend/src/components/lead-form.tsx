@@ -7,7 +7,10 @@ import { z } from "zod";
 
 const schema = z.object({
   parentName: z.string().min(2, "Vui lòng nhập họ tên"),
-  phone: z.string().regex(/^(0|\+84)[0-9]{9,10}$/, "Số điện thoại chưa đúng"),
+  phone: z
+    .string()
+    .transform((value) => value.replace(/[\s.()-]/g, ""))
+    .refine((value) => /^(0[35789][0-9]{8}|\+84[35789][0-9]{8})$/.test(value), "Số điện thoại chưa đúng"),
   studentName: z.string().min(2, "Vui lòng nhập tên học viên"),
   studentGrade: z.string().min(1, "Vui lòng chọn khối lớp"),
   interestedCourse: z.string().min(1, "Vui lòng chọn chương trình"),

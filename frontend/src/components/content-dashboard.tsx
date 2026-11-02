@@ -10,6 +10,7 @@ import {
   ClipboardList,
   FileCheck2,
   FileSearch,
+  GraduationCap,
   LayoutDashboard,
   LogOut,
   UserRoundCheck,
@@ -22,6 +23,14 @@ import {
   schoolLevels,
 } from "@/lib/content-options";
 import { Modal } from "@/components/modal";
+import { apiFetch } from "@/lib/api-client";
+import { safeExternalUrl } from "@/lib/safe-url";
+import {
+  cleanQuestionPrompt,
+  enrichPronunciationOptions,
+  renderFormattedText,
+  stripFormattedText,
+} from "@/lib/formatted-text";
 
 type Role = "ADMIN" | "TEACHER";
 type User = { fullName: string; email: string; role: Role | "STUDENT" };
@@ -75,6 +84,7 @@ type Exam = {
   schoolLevel: string;
   grade: number;
   status: string;
+  showAnswers: boolean;
   startPage: number;
   endPage: number;
   extractedAt: string | null;
@@ -114,9 +124,42 @@ type Lead = {
   id: string;
   parentName: string;
   studentName: string;
+  studentGrade?: string | null;
   phone: string;
   interestedCourse: string;
+  note?: string | null;
   status: string;
+};
+type AdminLesson = {
+  id: string;
+  title: string;
+  summary: string;
+  sortOrder: number;
+};
+type AdminCourse = {
+  id: string;
+  slug: string;
+  title: string;
+  ageRange: string;
+  level: string;
+  duration: string;
+  summary: string;
+  status: "DRAFT" | "REVIEW" | "PUBLISHED";
+  lessons: AdminLesson[];
+  _count: { enrollments: number; materials: number };
+};
+type AdminUser = {
+  id: string;
+  fullName: string;
+  email: string;
+  phone: string | null;
+  role: "STUDENT" | "TEACHER" | "ADMIN";
+  gradeLevel: string | null;
+  enrollments: {
+    id: string;
+    progress: number;
+    course: { id: string; title: string };
+  }[];
 };
 type AttemptQuestion = {
   position: number;
@@ -154,6 +197,8 @@ const statusLabels: Record<string, string> = {
   PUBLISHED: "Đã xuất bản",
   NEW: "Mới",
   CONTACTED: "Đã liên hệ",
+  ENROLLED: "Đã nhập học",
+  CLOSED: "Đã đóng",
   INTERVIEW: "Phỏng vấn",
   HIRED: "Đã nhận",
   REJECTED: "Từ chối",
@@ -180,14 +225,11 @@ function redirectToLogin() {
   const returnTo = `${window.location.pathname}${window.location.search}`;
   const loginUrl = `/dang-nhap?returnTo=${encodeURIComponent(returnTo)}`;
   if (`${window.location.pathname}${window.location.search}` !== loginUrl)
-    window.location.assign(loginUrl);
+    window.location.href = loginUrl;
 }
 
 async function request(path: string, init?: RequestInit) {
-  const response = await fetch(`${api}${path}`, {
-    credentials: "include",
-    ...init,
-  });
+  const response = await apiFetch(`${api}${path}`, init);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     if (response.status === 401) {
@@ -210,6 +252,8 @@ export function ContentDashboard({ role }: { role: Role }) {
   const [materials, setMaterials] = useState<Material[]>([]);
   const [applications, setApplications] = useState<Application[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
+  const [adminCourses, setAdminCourses] = useState<AdminCourse[]>([]);
+  const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
   const [attempts, setAttempts] = useState<StaffAttempt[]>([]);
   const [storage, setStorage] = useState<StorageStats | null>(null);
   const [recognitionLearning, setRecognitionLearning] = useState<RecognitionLearningStats | null>(null);
@@ -241,12 +285,16 @@ export function ContentDashboard({ role }: { role: Role }) {
     setStorage(storageInfo);
     setRecognitionLearning(learningInfo);
     if (role === "ADMIN") {
-      const [applicationList, leadList] = await Promise.all([
+      const [applicationList, leadList, courseList, userList] = await Promise.all([
         request("/admin/content/applications"),
         request("/admin/leads"),
+        request("/admin/courses"),
+        request("/admin/users"),
       ]);
       setApplications(applicationList);
       setLeads(leadList);
+      setAdminCourses(courseList);
+      setAdminUsers(userList);
     }
   }, [role]);
 
@@ -269,14 +317,23 @@ export function ContentDashboard({ role }: { role: Role }) {
       .catch(() => router.replace("/dang-nhap"));
   }, [role, router, reload]);
 
+  const reloadProgress = useCallback(async () => {
+    const [sourceList, examList] = await Promise.all([
+      request("/staff/content/sources"),
+      request("/staff/content/exams"),
+    ]);
+    setSources(sourceList);
+    setExams(examList);
+  }, []);
+
   useEffect(() => {
     if (
       !sources.some((source) => ["QUEUED", "SCANNING", "PROCESSING"].includes(source.status)) &&
       !exams.some((exam) => ["QUEUED", "PROCESSING"].includes(exam.extractionStatus))
     ) return;
-    const timer = window.setTimeout(() => void reload(), 2000);
+    const timer = window.setTimeout(() => void reloadProgress(), 2500);
     return () => window.clearTimeout(timer);
-  }, [sources, exams, reload]);
+  }, [sources, exams, reloadProgress]);
 
   async function action(task: () => Promise<unknown>, success: string) {
     setBusy(true);
@@ -321,6 +378,7 @@ export function ContentDashboard({ role }: { role: Role }) {
     const body = {
       ...Object.fromEntries(data.entries()),
       extractQuestions: data.get("extractQuestions") === "on",
+      showAnswers: data.get("showAnswers") === "on",
     };
     if (
       await action(
@@ -385,6 +443,77 @@ export function ContentDashboard({ role }: { role: Role }) {
       "Đã xóa câu khỏi phiếu trả lời.",
     );
   }
+  async function createAdminCourse(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    if (
+      await action(
+        () =>
+          request("/admin/courses", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values),
+          }),
+        "Đã tạo khóa học mới.",
+      )
+    )
+      form.reset();
+  }
+  async function addCourseLesson(
+    courseId: string,
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    if (
+      await action(
+        () =>
+          request(`/admin/courses/${courseId}/lessons`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values),
+          }),
+        "Đã thêm bài học vào khóa học.",
+      )
+    )
+      form.reset();
+  }
+  async function createAdminUser(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    if (
+      await action(
+        () =>
+          request("/admin/users", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values),
+          }),
+        "Đã tạo tài khoản thành công.",
+      )
+    )
+      form.reset();
+  }
+  async function enrollStudent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form));
+    if (
+      await action(
+        () =>
+          request("/admin/enrollments", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(values),
+          }),
+        "Đã ghi danh/cập nhật tiến độ học viên.",
+      )
+    )
+      form.reset();
+  }
   const nav = [
     ["overview", "Tổng quan", LayoutDashboard],
     ["exams", "Luyện đề", ClipboardList],
@@ -392,6 +521,7 @@ export function ContentDashboard({ role }: { role: Role }) {
     ["materials", "Thư viện tài liệu", BookOpen],
     ...(role === "ADMIN"
       ? ([
+          ["courses", "Khóa học & Học viên", GraduationCap],
           ["applications", "Ứng tuyển giáo viên", UserRoundCheck],
           ["leads", "Đăng ký tư vấn", Users],
         ] as const)
@@ -724,6 +854,22 @@ export function ContentDashboard({ role }: { role: Role }) {
                       </span>
                     </span>
                   </label>
+                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm md:col-span-2">
+                    <input
+                      type="checkbox"
+                      name="showAnswers"
+                      defaultChecked
+                      className="mt-1 size-4 accent-[#0b3157]"
+                    />
+                    <span>
+                      <strong className="block text-[#092b4c]">
+                        Công bố đáp án chi tiết ngay sau khi học viên nộp bài
+                      </strong>
+                      <span className="mt-1 block leading-6 text-slate-600">
+                        Bỏ chọn nếu đây là kỳ thi/bài kiểm tra cần bảo mật đáp án. Bạn có thể bật công bố đáp án bất cứ lúc nào sau khi ca thi kết thúc.
+                      </span>
+                    </span>
+                  </label>
                   <button
                     disabled={busy || !sources.some((source) => source.status === "READY")}
                     className="btn-primary w-fit md:col-span-2"
@@ -755,26 +901,39 @@ export function ContentDashboard({ role }: { role: Role }) {
                             {statusLabels[exam.status]}
                           </p>
                           {exam.extractionStatus === "READY" && (
-                            <span
-                              className={`mt-2 inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                exam.extractionProvider === "GEMINI"
-                                  ? "bg-emerald-50 text-emerald-700"
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <span
+                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                  exam.extractionProvider === "GEMINI"
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : exam.extractionProvider === "LOCAL_FALLBACK"
+                                      ? "bg-amber-50 text-amber-800"
+                                      : "bg-slate-100 text-slate-600"
+                                }`}
+                                title={
+                                  exam.extractionProvider === "GEMINI"
+                                    ? `${exam.aiModel || "Gemini"} · ${exam.aiInputTokens || 0} token vào · ${exam.aiOutputTokens || 0} token ra`
+                                    : exam.aiFallbackReason || undefined
+                                }
+                              >
+                                {exam.extractionProvider === "GEMINI"
+                                  ? "Gemini hỗ trợ"
                                   : exam.extractionProvider === "LOCAL_FALLBACK"
-                                    ? "bg-amber-50 text-amber-800"
-                                    : "bg-slate-100 text-slate-600"
-                              }`}
-                              title={
-                                exam.extractionProvider === "GEMINI"
-                                  ? `${exam.aiModel || "Gemini"} · ${exam.aiInputTokens || 0} token vào · ${exam.aiOutputTokens || 0} token ra`
-                                  : exam.aiFallbackReason || undefined
-                              }
-                            >
-                              {exam.extractionProvider === "GEMINI"
-                                ? "Gemini hỗ trợ"
-                                : exam.extractionProvider === "LOCAL_FALLBACK"
-                                  ? "Dự phòng nội bộ"
-                                  : "Nhận diện nội bộ"}
-                            </span>
+                                    ? "Dự phòng nội bộ"
+                                    : "Nhận diện nội bộ"}
+                              </span>
+                              <span
+                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                  exam.showAnswers !== false
+                                    ? "bg-blue-50 text-blue-700"
+                                    : "bg-amber-50 text-amber-800"
+                                }`}
+                              >
+                                {exam.showAnswers !== false
+                                  ? "Hiện đáp án sau nộp"
+                                  : "Đang ẩn đáp án"}
+                              </span>
+                            </div>
                           )}
                           {exam.extractionStatus !== "READY" && (
                             <p className={`mt-2 text-xs font-bold ${exam.extractionStatus === "FAILED" ? "text-red-700" : "text-blue-700"}`}>
@@ -800,6 +959,21 @@ export function ContentDashboard({ role }: { role: Role }) {
                           >
                             Duyệt câu hỏi
                           </button>
+                          <button
+                            disabled={busy}
+                            onClick={() =>
+                              patch(
+                                `/staff/content/exams/${exam.id}/answer-visibility`,
+                                { showAnswers: exam.showAnswers === false },
+                                exam.showAnswers === false
+                                  ? "Đã công bố đáp án chi tiết cho học viên."
+                                  : "Đã ẩn đáp án chi tiết đối với học viên.",
+                              )
+                            }
+                            className="btn-outline min-h-9 px-3"
+                          >
+                            {exam.showAnswers === false ? "Công bố đáp án" : "Ẩn đáp án"}
+                          </button>
                           {exam.status !== "PUBLISHED" && (
                             <button
                               disabled={busy || exam.extractionStatus === "QUEUED" || exam.extractionStatus === "PROCESSING"}
@@ -818,7 +992,7 @@ export function ContentDashboard({ role }: { role: Role }) {
                               Trích xuất lại
                             </button>
                           )}
-                          {exam.status !== "PUBLISHED" && (
+                          {exam.status !== "PUBLISHED" && (role === "ADMIN" || exam.status === "DRAFT") && (
                             <button
                               disabled={busy || exam.extractionStatus !== "READY"}
                               onClick={() =>
@@ -836,6 +1010,23 @@ export function ContentDashboard({ role }: { role: Role }) {
                               className="btn-primary min-h-9 px-3"
                             >
                               {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
+                            </button>
+                          )}
+                          {exam.status === "REVIEW" && (
+                            <button
+                              disabled={busy}
+                              onClick={() =>
+                                patch(
+                                  `/staff/content/exams/${exam.id}/status`,
+                                  { status: "DRAFT" },
+                                  role === "ADMIN"
+                                    ? "Đã trả đề về bản nháp cho giáo viên chỉnh sửa."
+                                    : "Đã rút đề về bản nháp.",
+                                )
+                              }
+                              className="btn-outline min-h-9 px-3"
+                            >
+                              {role === "ADMIN" ? "Trả về bản nháp" : "Rút về bản nháp"}
                             </button>
                           )}
                           {role === "ADMIN" && exam.status === "PUBLISHED" && (
@@ -1128,7 +1319,7 @@ export function ContentDashboard({ role }: { role: Role }) {
                         </p>
                       </div>
                       <div className="flex gap-2">
-                        {item.status !== "PUBLISHED" && (
+                        {item.status !== "PUBLISHED" && (role === "ADMIN" || item.status === "DRAFT") && (
                           <button
                             disabled={busy}
                             className="btn-primary min-h-9 px-3"
@@ -1146,6 +1337,23 @@ export function ContentDashboard({ role }: { role: Role }) {
                             }
                           >
                             {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
+                          </button>
+                        )}
+                        {item.status === "REVIEW" && (
+                          <button
+                            disabled={busy}
+                            className="btn-outline min-h-9 px-3"
+                            onClick={() =>
+                              patch(
+                                `/staff/content/materials/${item.id}/status`,
+                                { status: "DRAFT" },
+                                role === "ADMIN"
+                                  ? "Đã trả tài liệu về bản nháp."
+                                  : "Đã rút tài liệu về bản nháp.",
+                              )
+                            }
+                          >
+                            {role === "ADMIN" ? "Trả về bản nháp" : "Rút về bản nháp"}
                           </button>
                         )}
                         {role === "ADMIN" && item.status === "PUBLISHED" && (
@@ -1187,7 +1395,7 @@ export function ContentDashboard({ role }: { role: Role }) {
                         href={
                           item.fileName
                             ? `${api}/staff/content/materials/${item.id}/file`
-                            : item.driveUrl || "#"
+                            : safeExternalUrl(item.driveUrl) || "#"
                         }
                         target="_blank"
                         rel="noreferrer"
@@ -1199,6 +1407,270 @@ export function ContentDashboard({ role }: { role: Role }) {
                 </div>
               </div>
             )}
+          {tab === "courses" && role === "ADMIN" && (
+            <div className="space-y-6">
+              <div className="grid gap-6 lg:grid-cols-2">
+                <div className="soft-card p-6">
+                  <h2 className="text-lg font-bold text-[#092b4c]">
+                    Tạo khóa học mới
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Khóa học xuất bản sẽ hiển thị trên trang Khóa học công khai và mở ghi danh cho học viên.
+                  </p>
+                  <form
+                    onSubmit={createAdminCourse}
+                    className="mt-5 grid gap-4 sm:grid-cols-2"
+                  >
+                    <Field name="title" label="Tên khóa học" required />
+                    <Field
+                      name="ageRange"
+                      label="Độ tuổi / Nhóm lớp"
+                      defaultValue="11–15 tuổi"
+                      required
+                    />
+                    <Field
+                      name="level"
+                      label="Khối / Cấp độ"
+                      defaultValue="Lớp 6 - 9"
+                      required
+                    />
+                    <Field
+                      name="duration"
+                      label="Thời lượng"
+                      defaultValue="24 buổi"
+                      required
+                    />
+                    <label className="text-sm font-semibold sm:col-span-2">
+                      Tóm tắt chương trình
+                      <textarea
+                        name="summary"
+                        required
+                        className="field-control mt-2 min-h-20 p-3"
+                      />
+                    </label>
+                    <button
+                      disabled={busy}
+                      className="btn-primary w-fit sm:col-span-2"
+                    >
+                      Lưu khóa học
+                    </button>
+                  </form>
+                </div>
+
+                <div className="soft-card p-6">
+                  <h2 className="text-lg font-bold text-[#092b4c]">
+                    Tạo tài khoản & Ghi danh học viên
+                  </h2>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Cấp tài khoản mới cho học viên/giáo viên hoặc ghi danh học viên vào khóa học đang mở.
+                  </p>
+                  <form
+                    onSubmit={createAdminUser}
+                    className="mt-5 grid gap-4 sm:grid-cols-2"
+                  >
+                    <Field name="fullName" label="Họ và tên" required />
+                    <Field name="email" label="Email đăng nhập" type="email" required />
+                    <Field
+                      name="password"
+                      label="Mật khẩu khởi tạo"
+                      type="password"
+                      required
+                    />
+                    <label className="text-sm font-semibold">
+                      Vai trò
+                      <select
+                        name="role"
+                        defaultValue="STUDENT"
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="STUDENT">Học viên</option>
+                        <option value="TEACHER">Giáo viên</option>
+                        <option value="ADMIN">Quản trị viên</option>
+                      </select>
+                    </label>
+                    <Field name="phone" label="Số điện thoại" />
+                    <Field name="gradeLevel" label="Khối lớp (Ví dụ: Lớp 8)" />
+                    <button
+                      disabled={busy}
+                      className="btn-outline w-fit sm:col-span-2"
+                    >
+                      Tạo tài khoản
+                    </button>
+                  </form>
+
+                  <form
+                    onSubmit={enrollStudent}
+                    className="mt-6 grid gap-4 border-t border-slate-200 pt-5 sm:grid-cols-3"
+                  >
+                    <label className="text-sm font-semibold">
+                      Học viên
+                      <select
+                        name="userId"
+                        required
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="">Chọn học viên</option>
+                        {adminUsers
+                          .filter((item) => item.role === "STUDENT")
+                          .map((student) => (
+                            <option key={student.id} value={student.id}>
+                              {student.fullName} ({student.email})
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="text-sm font-semibold">
+                      Khóa học
+                      <select
+                        name="courseId"
+                        required
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="">Chọn khóa học</option>
+                        {adminCourses.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <Field
+                      name="progress"
+                      label="Tiến độ (%)"
+                      type="number"
+                      defaultValue="0"
+                      min="0"
+                      max="100"
+                    />
+                    <button
+                      disabled={busy}
+                      className="btn-primary w-fit sm:col-span-3"
+                    >
+                      Ghi danh / Cập nhật tiến độ
+                    </button>
+                  </form>
+                </div>
+              </div>
+
+              <div className="soft-card p-6">
+                <h2 className="text-lg font-bold text-[#092b4c]">
+                  Danh sách khóa học ({adminCourses.length})
+                </h2>
+                <div className="mt-4 divide-y divide-slate-200">
+                  {adminCourses.map((course) => (
+                    <div key={course.id} className="py-5 first:pt-1 last:pb-1">
+                      <div className="flex flex-wrap items-start justify-between gap-4">
+                        <div>
+                          <strong className="text-base text-[#092b4c]">
+                            {course.title}
+                          </strong>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {[course.ageRange, course.level, course.duration].filter(Boolean).join(" · ")} ·{" "}
+                            <span className="tabular-nums">
+                              {course._count.enrollments} học viên
+                            </span>{" "}
+                            ·{" "}
+                            <span className="tabular-nums">
+                              {course.lessons.length} bài học
+                            </span>{" "}
+                            · {statusLabels[course.status] || course.status}
+                          </p>
+                          <p className="mt-2 max-w-2xl text-sm text-slate-600">
+                            {course.summary}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            disabled={busy}
+                            className="btn-outline min-h-9 px-3 text-xs"
+                            onClick={() =>
+                              patch(
+                                `/admin/courses/${course.id}/status`,
+                                {
+                                  status:
+                                    course.status === "PUBLISHED"
+                                      ? "DRAFT"
+                                      : "PUBLISHED",
+                                },
+                                course.status === "PUBLISHED"
+                                  ? "Đã chuyển khóa học về bản nháp."
+                                  : "Đã xuất bản khóa học.",
+                              )
+                            }
+                          >
+                            {course.status === "PUBLISHED" ? "Gỡ xuất bản" : "Xuất bản"}
+                          </button>
+                        </div>
+                      </div>
+                      <form
+                        onSubmit={(event) => addCourseLesson(course.id, event)}
+                        className="mt-4 grid gap-3 sm:grid-cols-2 sm:items-end"
+                      >
+                        <Field name="title" label="Tên bài học mới" required />
+                        <Field name="summary" label="Nội dung trọng tâm" required />
+                        <Field
+                          name="driveUrl"
+                          label="Link tài liệu (tùy chọn)"
+                          type="url"
+                          placeholder="https://drive.google.com/..."
+                        />
+                        <Field
+                          name="youtubeUrl"
+                          label="Link video (tùy chọn)"
+                          type="url"
+                          placeholder="https://youtube.com/..."
+                        />
+                        <button
+                          disabled={busy}
+                          className="btn-outline min-h-11 w-fit px-4 text-xs sm:col-span-2"
+                        >
+                          + Thêm bài học
+                        </button>
+                      </form>
+                    </div>
+                  ))}
+                  {!adminCourses.length && (
+                    <p className="text-sm text-slate-500">Chưa có khóa học nào.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="soft-card p-6">
+                <h2 className="text-lg font-bold text-[#092b4c]">
+                  Tài khoản hệ thống ({adminUsers.length})
+                </h2>
+                <div className="mt-4 divide-y divide-slate-200">
+                  {adminUsers.map((account) => (
+                    <div
+                      key={account.id}
+                      className="flex flex-wrap items-center justify-between gap-3 py-3.5 text-sm first:pt-1 last:pb-1"
+                    >
+                      <div>
+                        <strong className="text-[#092b4c]">{account.fullName}</strong>{" "}
+                        <span className="text-slate-500">· {account.email}</span>
+                        <p className="mt-0.5 text-xs text-slate-500">
+                          {account.role === "ADMIN"
+                            ? "Quản trị viên"
+                            : account.role === "TEACHER"
+                              ? "Giáo viên"
+                              : "Học viên"}
+                          {account.gradeLevel ? ` · ${account.gradeLevel}` : ""}
+                          {account.phone ? ` · ${account.phone}` : ""}
+                        </p>
+                      </div>
+                      {account.enrollments.length > 0 && (
+                        <p className="text-xs font-semibold text-[#123d68] tabular-nums">
+                          {account.enrollments
+                            .map((en) => `${en.course.title} (${en.progress ?? 0}%)`)
+                            .join(", ")}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           {tab === "applications" && role === "ADMIN" && (
             <div className="soft-card overflow-x-auto p-6">
               <h2 className="text-lg font-bold text-[#092b4c]">
@@ -1273,13 +1745,40 @@ export function ContentDashboard({ role }: { role: Role }) {
                 {leads.map((item) => (
                   <div
                     key={item.id}
-                    className="rounded-xl border border-slate-200 p-4 text-sm"
+                    className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 text-sm"
                   >
-                    <strong>{item.parentName}</strong> · {item.phone}
-                    <p className="mt-1 text-slate-500">
-                      Học viên: {item.studentName} · {item.interestedCourse} ·{" "}
-                      {item.status}
-                    </p>
+                    <div>
+                      <strong className="text-[#092b4c]">{item.parentName}</strong> ·{" "}
+                      <span className="tabular-nums">{item.phone}</span>
+                      <p className="mt-1 text-slate-500">
+                        Học viên: {item.studentName}
+                        {item.studentGrade ? ` (${item.studentGrade})` : ""} ·{" "}
+                        {item.interestedCourse}
+                      </p>
+                      {item.note && (
+                        <p className="mt-1.5 text-xs text-slate-600">{item.note}</p>
+                      )}
+                    </div>
+                    <label className="text-xs font-semibold">
+                      Trạng thái
+                      <select
+                        value={item.status}
+                        onChange={(event) =>
+                          patch(
+                            `/admin/leads/${item.id}/${event.target.value}`,
+                            {},
+                            "Đã cập nhật trạng thái tư vấn.",
+                          )
+                        }
+                        className="field-control mt-2 p-2"
+                      >
+                        {["NEW", "CONTACTED", "ENROLLED", "CLOSED"].map((status) => (
+                          <option key={status} value={status}>
+                            {statusLabels[status] || status}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   </div>
                 ))}
                 {!leads.length && (
@@ -1304,6 +1803,30 @@ function answeredCount(value: unknown) {
   return Object.values(objectRecord(value)).filter(
     (answer) => typeof answer === "string" && answer.trim(),
   ).length;
+}
+
+function normalizeShortTextPhrase(value: string) {
+  return value
+    .normalize("NFC")
+    .replace(/<\/?(?:u|b|strong|i|em)>/gi, "")
+    .replace(/__(?![_\s])([^_\n]+?)(?<![_\s])__/g, "$1")
+    .replace(/\*\*([^*]+?)\*\*/g, "$1")
+    .replace(/[’‘`]/g, "'")
+    .toLocaleLowerCase("vi")
+    .replace(/\bcannot\b/g, "can not")
+    .replace(/\bwon't\b/g, "will not")
+    .replace(/\bshan't\b/g, "shall not")
+    .replace(/\bcan't\b/g, "can not")
+    .replace(/n't\b/g, " not")
+    .replace(/\bi'm\b/g, "i am")
+    .replace(/\b(you|we|they)'re\b/g, "$1 are")
+    .replace(/\b(i|you|we|they)'ve\b/g, "$1 have")
+    .replace(/\b(i|you|he|she|it|we|they)'ll\b/g, "$1 will")
+    .replace(/\blet's\b/g, "let us")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([,?:;])\s*/g, "$1 ")
+    .replace(/[.!;]+$/g, "")
+    .trim();
 }
 
 function comparableAnswer(value: string, kind: string, taskType = "GENERAL") {
@@ -1334,7 +1857,35 @@ function comparableAnswer(value: string, kind: string, taskType = "GENERAL") {
     if (/^(true|t|đúng|dung|yes)$/i.test(normalized)) return "TRUE";
     if (/^(false|f|sai|no)$/i.test(normalized)) return "FALSE";
   }
+  if (kind === "SHORT_TEXT") {
+    return normalizeShortTextPhrase(normalized);
+  }
   return normalized.toLocaleLowerCase("vi");
+}
+
+function isAttemptAnswerCorrect(
+  response: string,
+  expectedAnswer: string,
+  kind: string,
+  taskType = "GENERAL",
+) {
+  const normalizedResponse = comparableAnswer(response, kind, taskType);
+  if (!normalizedResponse) return false;
+  if (normalizedResponse === comparableAnswer(expectedAnswer, kind, taskType))
+    return true;
+  if (
+    kind === "SHORT_TEXT" &&
+    taskType !== "MATCHING" &&
+    taskType !== "ORDERING" &&
+    /[\/|]/.test(expectedAnswer)
+  ) {
+    return expectedAnswer
+      .split(/\s*[\/|]\s*/)
+      .map((variant) => normalizeShortTextPhrase(variant))
+      .filter(Boolean)
+      .includes(normalizedResponse);
+  }
+  return false;
 }
 
 function formatAttemptResponse(question: AttemptQuestion, response: string) {
@@ -1383,9 +1934,15 @@ function AttemptReview({
         </p>
       )}
       <div className="max-h-[34rem] space-y-3 overflow-y-auto pr-2">
-        {attempt.exam.questions.map((question) => {
+        {attempt.exam.questions.map((question, index) => {
+          const showSection =
+            !!question.section &&
+            question.section !== attempt.exam.questions[index - 1]?.section;
           const response = String(answers[String(question.position)] || "");
-          const options = questionOptions(question.options);
+          const options = enrichPronunciationOptions(
+            questionOptions(question.options),
+            question.taskType,
+          );
           const selectedOption = options.find(
             (option) =>
               option.match(/^([A-H])[.)]/i)?.[1]?.toUpperCase() ===
@@ -1394,8 +1951,12 @@ function AttemptReview({
           const automatic = question.kind !== "ESSAY" && !!question.answer;
           const correct =
             automatic &&
-            comparableAnswer(response, question.kind, question.taskType) ===
-              comparableAnswer(question.answer || "", question.kind, question.taskType);
+            isAttemptAnswerCorrect(
+              response,
+              question.answer || "",
+              question.kind,
+              question.taskType,
+            );
           return (
             <div
               key={question.position}
@@ -1406,13 +1967,20 @@ function AttemptReview({
                   <strong className="text-sm text-[#092b4c]">
                     Câu {question.position}
                   </strong>
-                  {question.section && (
-                    <p className="mt-1 text-[11px] font-bold uppercase tracking-wider text-[#d91f2a]">
-                      {question.section}
+                  {showSection && question.section && (
+                    <p className="mt-2 whitespace-pre-wrap rounded-lg bg-[#f2f6fa] p-3 text-xs font-medium leading-6 text-slate-700">
+                      {renderFormattedText(question.section)}
                     </p>
                   )}
                   <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-[#172b3e]">
-                    {question.content || "Không có nội dung chữ"}
+                    {renderFormattedText(
+                      cleanQuestionPrompt(
+                        question.content,
+                        question.section,
+                        question.taskType,
+                        question.position,
+                      ),
+                    )}
                   </p>
                   {question.sourcePage && (
                     <p className="mt-1 text-[11px] text-slate-400">
@@ -1436,7 +2004,7 @@ function AttemptReview({
                             key={option}
                             className={`rounded-lg border px-3 py-2 text-xs leading-5 ${chosen ? "border-[#123d68] bg-[#edf3f8] font-bold text-[#092b4c]" : answer ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 text-slate-600"}`}
                           >
-                            {option}
+                            {renderFormattedText(option)}
                             {chosen && (
                               <span className="ml-2 text-[11px] uppercase text-[#123d68]">
                                 Học viên chọn
@@ -1454,7 +2022,7 @@ function AttemptReview({
                   )}
                   <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
                     <span className="font-semibold">Bài làm:</span>{" "}
-                    {selectedOption || formatAttemptResponse(question, response) || "Chưa trả lời"}
+                    {stripFormattedText(selectedOption) || formatAttemptResponse(question, response) || "Chưa trả lời"}
                   </p>
                 </div>
                 {attempt.status !== "DRAFT" && (
@@ -1481,7 +2049,7 @@ function AttemptReview({
           thể chấm cho đến khi bài được nộp.
         </p>
       )}
-      {attempt.status !== "DRAFT" && pendingQuestions.length > 0 && (
+      {attempt.status !== "DRAFT" && (
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -1497,6 +2065,8 @@ function AttemptReview({
           }}
           className="mt-5 rounded-xl bg-[#f7f9fb] p-4"
         >
+          {pendingQuestions.length > 0 && (
+            <>
           <h4 className="font-bold text-[#092b4c]">Chấm các câu còn lại</h4>
           <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {pendingQuestions.map((question) => (
@@ -1519,17 +2089,20 @@ function AttemptReview({
               </label>
             ))}
           </div>
+            </>
+          )}
           <label className="mt-4 block text-xs font-semibold">
             Nhận xét cho học viên
             <textarea
               name="feedback"
               defaultValue={attempt.teacherFeedback || ""}
+              maxLength={1000}
               className="field-control mt-1 min-h-20 p-3 text-sm"
               placeholder="Điểm mạnh, nội dung cần ôn lại..."
             />
           </label>
           <button disabled={busy} className="btn-primary mt-4">
-            Lưu điểm và nhận xét
+            {pendingQuestions.length > 0 ? "Lưu điểm và nhận xét" : "Lưu nhận xét"}
           </button>
         </form>
       )}
@@ -1555,6 +2128,7 @@ function Field({
   required?: boolean;
   type?: string;
   min?: string;
+  max?: string;
   placeholder?: string;
   defaultValue?: string;
 }) {
@@ -2113,13 +2687,22 @@ function QuestionReviewCard({
 
       {!editing ? (
         <>
-          {question.section && <p className="mt-3 text-xs font-semibold text-slate-500">{question.section}</p>}
-          <p className="mt-2 text-sm font-semibold leading-6 text-[#092b4c]">{question.content || `Câu ${question.position}`}</p>
+          {question.section && <p className="mt-3 text-xs font-semibold text-slate-500">{renderFormattedText(question.section)}</p>}
+          <p className="mt-2 text-sm font-semibold leading-6 text-[#092b4c]">
+            {renderFormattedText(
+              cleanQuestionPrompt(
+                question.content,
+                question.section,
+                question.taskType,
+                question.position,
+              ),
+            )}
+          </p>
           {options.length > 0 && (
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {options.map((option) => (
+              {enrichPronunciationOptions(options, question.taskType).map((option) => (
                 <span key={option} className="rounded-lg bg-slate-50 px-3 py-2 text-sm leading-5 text-slate-700">
-                  {option}
+                  {renderFormattedText(option)}
                 </span>
               ))}
             </div>
@@ -2250,11 +2833,11 @@ function QuestionReviewCard({
             </label>
           )}
           <label className="text-xs font-semibold md:col-span-3">
-            Nội dung câu hỏi
+            Nội dung câu hỏi (dùng __chữ__ để gạch chân âm tiết/từ cần sửa)
             <textarea name="content" defaultValue={question.content || ""} required className="field-control mt-1 min-h-20 p-2 text-sm" />
           </label>
           <label className="text-xs font-semibold md:col-span-3">
-            Các lựa chọn (mỗi dòng một lựa chọn)
+            Các lựa chọn (mỗi dòng một lựa chọn · ví dụ: A. l__a__yer)
             <textarea name="options" defaultValue={options.join("\n")} className="field-control mt-1 min-h-24 p-2 text-sm" />
           </label>
           {editingTaskType === "MATCHING" || editingTaskType === "ORDERING" ? (

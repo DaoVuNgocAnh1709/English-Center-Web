@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-client";
 
 type Attempt = {
   id: string;
@@ -19,15 +20,15 @@ type Attempt = {
 };
 export function StudentExamHistory() {
   const [items, setItems] = useState<Attempt[]>([]);
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
-    fetch(
-      `${process.env.NEXT_PUBLIC_API_URL || "/api"}/student/content/history`,
-      { credentials: "include" },
-    )
+    apiFetch(`${process.env.NEXT_PUBLIC_API_URL || "/api"}/student/content/history`)
       .then((response) => (response.ok ? response.json() : []))
-      .then(setItems)
-      .catch(() => {});
+      .then((data) => setItems(Array.isArray(data) ? data : []))
+      .catch(() => {})
+      .finally(() => setLoaded(true));
   }, []);
+  if (!loaded) return null;
   return (
     <section id="lich-su" className="scroll-mt-28 bg-[#f3f6fa] pb-16">
       <div className="container-shell surface-panel p-7">
@@ -49,7 +50,7 @@ export function StudentExamHistory() {
                   <div>
                     <div className="flex flex-wrap items-center gap-2">
                       <Link
-                        href={`/luyen-de/${item.exam.slug}`}
+                        href={`/luyen-de/${item.exam.slug}?attemptId=${encodeURIComponent(item.id)}`}
                         className="font-bold text-[#092b4c]"
                       >
                         {item.exam.title}
@@ -80,15 +81,23 @@ export function StudentExamHistory() {
                   </div>
                   {item.status === "DRAFT" ? (
                     <Link
-                      href={`/luyen-de/${item.exam.slug}`}
+                      href={`/luyen-de/${item.exam.slug}?attemptId=${encodeURIComponent(item.id)}`}
                       className="font-bold text-[#d91f2a]"
                     >
                       Tiếp tục làm →
                     </Link>
                   ) : (
-                    <strong>
-                      {earned}/{possible} điểm
-                    </strong>
+                    <div className="text-right">
+                      <strong className="tabular-nums">
+                        {earned}/{possible} điểm
+                      </strong>
+                      <Link
+                        href={`/luyen-de/${item.exam.slug}?attemptId=${encodeURIComponent(item.id)}`}
+                        className="mt-1 block text-xs font-bold text-[#d91f2a]"
+                      >
+                        Xem chi tiết →
+                      </Link>
+                    </div>
                   )}
                 </div>
                 {item.teacherFeedback && (

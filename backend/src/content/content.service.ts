@@ -18,12 +18,14 @@ import {
 } from "@prisma/client";
 import { PDFDocument } from "pdf-lib";
 import { createHash, randomUUID } from "crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
-import { join } from "path";
+import { createReadStream } from "fs";
+import { access, mkdir, readFile, rename, rm, writeFile } from "fs/promises";
+import { join, resolve } from "path";
 import { PrismaService } from "../prisma/prisma.service";
 import {
   ImportedQuestion,
   createExamTemplate,
+  extractDocxFormattedText,
   extractPdfWithOcr,
   inspectExamSource,
   probeExamSource,
@@ -45,7 +47,14 @@ export type Upload = {
   mimetype: string;
   size: number;
 };
-const root = process.env.UPLOAD_DIR || join(process.cwd(), "uploads");
+const root = resolve(process.env.UPLOAD_DIR || join(process.cwd(), "uploads"));
+function safeFilePath(fileKey: string) {
+  const fullPath = resolve(root, fileKey);
+  if (!fullPath.startsWith(`${root}/`) && !fullPath.startsWith(`${root}\\`) && fullPath !== root) {
+    throw new NotFoundException();
+  }
+  return fullPath;
+}
 const slug = (text: string) =>
   `${
     text
@@ -57,6 +66,42 @@ const slug = (text: string) =>
       .replace(/(^-|-$)/g, "")
       .slice(0, 65) || "noi-dung"
   }-${randomUUID().slice(0, 8)}`;
+
+const cp1252ToByte: Record<number, number> = {
+  0x20ac: 0x80, 0x201a: 0x82, 0x0192: 0x83, 0x201e: 0x84, 0x2026: 0x85,
+  0x2020: 0x86, 0x2021: 0x87, 0x02c6: 0x88, 0x2030: 0x89, 0x0160: 0x8a,
+  0x2039: 0x8b, 0x0152: 0x8c, 0x017d: 0x8e, 0x2018: 0x91, 0x2019: 0x92,
+  0x201c: 0x93, 0x201d: 0x94, 0x2022: 0x95, 0x2013: 0x96, 0x2014: 0x97,
+  0x02dc: 0x98, 0x2122: 0x99, 0x0161: 0x9a, 0x203a: 0x9b, 0x0153: 0x9c,
+  0x017e: 0x9e, 0x0178: 0x9f,
+};
+
+export function normalizeOriginalFilename(raw: string | null | undefined): string {
+  const input = String(raw ?? "").trim();
+  if (!input) return "";
+  if (/[ÃÂÄÅÆá»áº]/.test(input)) {
+    const bytes: number[] = [];
+    let validBytes = true;
+    for (let i = 0; i < input.length; i++) {
+      const code = input.charCodeAt(i);
+      if (code <= 0xff) {
+        bytes.push(code);
+      } else if (cp1252ToByte[code] !== undefined) {
+        bytes.push(cp1252ToByte[code]);
+      } else {
+        validBytes = false;
+        break;
+      }
+    }
+    if (validBytes) {
+      const decoded = Buffer.from(bytes).toString("utf8");
+      if (!decoded.includes("\uFFFD") && decoded.length < input.length) {
+        return decoded.normalize("NFC");
+      }
+    }
+  }
+  return input.normalize("NFC");
+}
 function safeFile(file: Upload, pdfOnly = false) {
   const maxMb = Number(process.env.UPLOAD_MAX_FILE_MB || 15);
   if (!file || !file.buffer || file.size > maxMb * 1024 * 1024 || file.size < 8)
@@ -121,7 +166,7 @@ function cleanAnswers(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new BadRequestException("Phiếu trả lời không hợp lệ.");
   const entries = Object.entries(value);
-  if (entries.length > 200)
+  if (entries.length > 500)
     throw new BadRequestException("Phiếu trả lời không hợp lệ.");
   const answers: Record<string, string> = {};
   for (const [key, answer] of entries) {
@@ -129,7 +174,7 @@ function cleanAnswers(value: unknown) {
     if (
       !Number.isInteger(position) ||
       position < 1 ||
-      position > 200 ||
+      position > 500 ||
       typeof answer !== "string" ||
       answer.length > 10000
     )
@@ -162,6 +207,30 @@ function cleanInteractionData(value: unknown): Prisma.InputJsonObject | undefine
 
 const hashGuestToken = (token: string) =>
   createHash("sha256").update(token).digest("hex");
+function normalizeShortTextPhrase(value: string) {
+  return value
+    .normalize("NFC")
+    .replace(/<\/?(?:u|b|strong|i|em)>/gi, "")
+    .replace(/__(?![_\s])([^_\n]+?)(?<![_\s])__/g, "$1")
+    .replace(/\*\*([^*]+?)\*\*/g, "$1")
+    .replace(/[’‘`]/g, "'")
+    .toLocaleLowerCase("vi")
+    .replace(/\bcannot\b/g, "can not")
+    .replace(/\bwon't\b/g, "will not")
+    .replace(/\bshan't\b/g, "shall not")
+    .replace(/\bcan't\b/g, "can not")
+    .replace(/n't\b/g, " not")
+    .replace(/\bi'm\b/g, "i am")
+    .replace(/\b(you|we|they)'re\b/g, "$1 are")
+    .replace(/\b(i|you|we|they)'ve\b/g, "$1 have")
+    .replace(/\b(i|you|he|she|it|we|they)'ll\b/g, "$1 will")
+    .replace(/\blet's\b/g, "let us")
+    .replace(/\s+/g, " ")
+    .replace(/\s*([,?:;])\s*/g, "$1 ")
+    .replace(/[.!;]+$/g, "")
+    .trim();
+}
+
 export function normalizedScoringAnswer(
   value: string,
   kind: QuestionKind,
@@ -212,14 +281,43 @@ export function normalizedScoringAnswer(
       .sort()
       .join("|");
   }
+  if (kind === QuestionKind.SHORT_TEXT) {
+    return normalizeShortTextPhrase(normalized);
+  }
   return normalized.toLocaleLowerCase();
 }
+
+export function isScoringAnswerMatch(
+  response: string,
+  expectedAnswer: string,
+  kind: QuestionKind,
+  taskType: QuestionTaskType = QuestionTaskType.GENERAL,
+): boolean {
+  const normalizedResponse = normalizedScoringAnswer(response, kind, taskType);
+  if (!normalizedResponse) return false;
+  const normalizedExpected = normalizedScoringAnswer(expectedAnswer, kind, taskType);
+  if (normalizedResponse === normalizedExpected) return true;
+  if (
+    kind === QuestionKind.SHORT_TEXT &&
+    taskType !== QuestionTaskType.MATCHING &&
+    taskType !== QuestionTaskType.ORDERING &&
+    /[\/|]/.test(expectedAnswer)
+  ) {
+    const variants = expectedAnswer
+      .split(/\s*[\/|]\s*/)
+      .map((variant) => normalizeShortTextPhrase(variant))
+      .filter(Boolean);
+    return variants.includes(normalizedResponse);
+  }
+  return false;
+}
+
 function parseKeys(text: string) {
   const result = new Map<number, string>();
   if (!text.trim()) return result;
   for (const entry of text.split(/[\n;,]+/)) {
     if (!entry.trim()) continue;
-    const match = entry.trim().match(/^(\d{1,3})\s*[:.-]\s*(.{1,100})$/);
+    const match = entry.trim().match(/^(\d{1,3})\s*[:.-]\s*(.{1,200})$/);
     if (!match)
       throw new BadRequestException(
         `Đáp án không đúng định dạng: ${entry.trim()}`,
@@ -229,7 +327,7 @@ function parseKeys(text: string) {
       throw new BadRequestException("Số câu trùng hoặc không hợp lệ.");
     result.set(index, match[2].trim());
   }
-  if (result.size > 200) throw new BadRequestException("Tối đa 200 câu/đề.");
+  if (result.size > 500) throw new BadRequestException("Tối đa 500 câu/đề.");
   return result;
 }
 
@@ -359,7 +457,7 @@ export class ContentService {
           seen.add(key);
           return true;
         })
-        .slice(0, 200)
+        .slice(0, 500)
         .map((question, index) => ({ ...question, position: index + 1 }));
       return {
         status: "SUCCESS",
@@ -405,10 +503,11 @@ export class ContentService {
     await this.assertStorageQuota(userId, file.size);
     const imported = await probeExamSource(file);
     const fileKey = await save(file.buffer, imported.extension, "quarantine");
+    const cleanFileName = normalizeOriginalFilename(file.originalname).slice(0, 180);
     return this.prisma.examSource.create({
       data: {
         fileKey,
-        fileName: file.originalname.slice(0, 180),
+        fileName: cleanFileName,
         mimeType: imported.mimeType,
         pageCount: imported.pageCount,
         sizeBytes: file.size,
@@ -445,7 +544,7 @@ export class ContentService {
       buffer,
       size: buffer.length,
       mimetype: "application/pdf",
-      originalname: `${files[0].originalname.replace(/\.[^.]+$/, "").slice(0, 120)}-va-${files.length - 1}-anh.pdf`,
+      originalname: `${normalizeOriginalFilename(files[0].originalname).replace(/\.[^.]+$/, "").slice(0, 120)}-va-${files.length - 1}-anh.pdf`,
     }, userId);
   }
 
@@ -632,6 +731,52 @@ export class ContentService {
           }));
           if (ai.status !== "DISABLED") extracted.warnings.unshift(ai.reason);
         }
+      } else if (next.source.mimeType.includes("wordprocessingml")) {
+        const docxBuffer = await readFile(join(root, next.source.fileKey));
+        const formatted = await extractDocxFormattedText(docxBuffer);
+        const ai = await this.geminiImport.extractText(formatted.text);
+        if (ai.status === "SUCCESS") {
+          extractionProvider = ExtractionProvider.GEMINI;
+          aiModel = ai.model;
+          aiInputTokens = ai.usage.inputTokens;
+          aiOutputTokens = ai.usage.outputTokens;
+          extracted = {
+            questions: ai.questions.map((question) => ({
+              ...question,
+              recognitionProvider: ExtractionProvider.GEMINI,
+              recognitionModel: ai.model,
+              sourcePage: 1,
+            })),
+            warnings: [...ai.warnings, ...formatted.messages],
+          };
+        } else {
+          if (ai.status !== "DISABLED") {
+            extractionProvider = ExtractionProvider.LOCAL_FALLBACK;
+            aiModel = ai.model;
+            aiFallbackReason = ai.reason;
+          }
+          const provider =
+            ai.status === "DISABLED"
+              ? ExtractionProvider.LOCAL
+              : ExtractionProvider.LOCAL_FALLBACK;
+          extracted = {
+            questions: Array.isArray(next.source.importDraft)
+              ? (next.source.importDraft as unknown as ImportedQuestion[]).map(
+                  (question) => ({
+                    ...question,
+                    recognitionProvider: provider,
+                    recognitionModel: null,
+                  }),
+                )
+              : [],
+            warnings: [
+              ...(ai.status !== "DISABLED" ? [ai.reason] : []),
+              ...(Array.isArray(next.source.importWarnings)
+                ? next.source.importWarnings.map(String)
+                : []),
+            ],
+          };
+        }
       } else {
         extracted = {
             questions: Array.isArray(next.source.importDraft)
@@ -659,9 +804,9 @@ export class ContentService {
         extracted.warnings.push(
           `Đã áp dụng ${learned.applied} bản sửa và loại ${learned.suppressed} câu nhận diện nhầm từ lần giáo viên duyệt trước.`,
         );
-      if (extracted.questions.length > 200)
+      if (extracted.questions.length > 500)
         extracted.warnings.push(
-          `Tệp nhận diện ${extracted.questions.length} câu; hệ thống chỉ nhập 200 câu đầu tiên cho một đề.`,
+          `Tệp nhận diện ${extracted.questions.length} câu; hệ thống chỉ nhập 500 câu đầu tiên cho một đề.`,
         );
       const existingBySignature = new Map(
         next.questions.map((question) => [questionSignature(question), question]),
@@ -672,7 +817,7 @@ export class ContentService {
         existingBySource.set(key, [...(existingBySource.get(key) || []), question]);
       }
       const matchedExistingIds = new Set<string>();
-      const questionData = extracted.questions.slice(0, 200).map((question) => {
+      const questionData = extracted.questions.slice(0, 500).map((question) => {
         const sourceKey = `${question.sourcePage || 0}|${question.sourceLabel || ""}|${question.kind}`;
         const sourceMatches = existingBySource.get(sourceKey) || [];
         const existing =
@@ -742,7 +887,7 @@ export class ContentService {
       await this.prisma.$transaction(async (tx) => {
         await tx.examQuestion.deleteMany({ where: { examId: next.id } });
         if (questionData.length)
-          await tx.examQuestion.createMany({ data: questionData.slice(0, 200) });
+          await tx.examQuestion.createMany({ data: questionData.slice(0, 500) });
         await tx.exam.update({
           where: { id: next.id },
           data: {
@@ -815,12 +960,17 @@ export class ContentService {
     return items.length;
   }
 
-  sources(userId: string, role: Role) {
-    return this.prisma.examSource.findMany({
+  async sources(userId: string, role: Role) {
+    const items = await this.prisma.examSource.findMany({
       where: role === Role.ADMIN ? {} : { uploadedById: userId },
       include: { _count: { select: { exams: true } } },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
+    return items.map((item) => ({
+      ...item,
+      fileName: normalizeOriginalFilename(item.fileName),
+    }));
   }
 
   async retrySource(id: string, userId: string, role: Role) {
@@ -859,6 +1009,7 @@ export class ContentService {
       durationMinutes?: number;
       answerText?: string;
       extractQuestions?: boolean;
+      showAnswers?: boolean;
     },
     userId: string,
     role: Role,
@@ -903,7 +1054,13 @@ export class ContentService {
     const sourceBytes = await readFile(join(root, source.fileKey));
     let fileKey = source.fileKey;
     let extracted: { questions: ImportedQuestion[]; warnings: string[] };
-    const queueExtraction = source.mimeType === "application/pdf" && data.extractQuestions !== false;
+    const aiEnabled =
+      process.env.AI_IMPORT_ENABLED === "true" &&
+      Boolean(process.env.GEMINI_API_KEY?.trim());
+    const queueExtraction =
+      (source.mimeType === "application/pdf" ||
+        (source.mimeType.includes("wordprocessingml") && aiEnabled)) &&
+      data.extractQuestions !== false;
     if (source.mimeType === "application/pdf") {
       const pdf = await PDFDocument.load(sourceBytes);
       const output = await PDFDocument.create();
@@ -916,6 +1073,11 @@ export class ContentService {
       extracted = queueExtraction
         ? { questions: [], warnings: ["Tệp đang được xử lý nền; bạn có thể rời trang và quay lại sau."] }
         : { questions: [], warnings: [] };
+    } else if (queueExtraction) {
+      extracted = {
+        questions: [],
+        warnings: ["Tệp Word đang được AI chuẩn hóa câu hỏi trong nền; bạn có thể rời trang và quay lại sau."],
+      };
     } else {
       const draft = Array.isArray(source.importDraft)
         ? (source.importDraft as unknown as ImportedQuestion[])
@@ -929,11 +1091,11 @@ export class ContentService {
               : [],
           };
     }
-    if (extracted.questions.length > 200)
+    if (extracted.questions.length > 500)
       extracted.warnings.push(
-        `PDF nhận diện ${extracted.questions.length} câu; hệ thống chỉ nhập 200 câu đầu tiên cho một đề.`,
+        `PDF nhận diện ${extracted.questions.length} câu; hệ thống chỉ nhập 500 câu đầu tiên cho một đề.`,
       );
-    const questionData = extracted.questions.slice(0, 200).map((question) => ({
+    const questionData = extracted.questions.slice(0, 500).map((question) => ({
       ...question,
       options: question.options as Prisma.InputJsonValue,
       interactionData: question.interactionData
@@ -976,6 +1138,7 @@ export class ContentService {
         schoolLevel: data.schoolLevel as SchoolLevel,
         grade: Number(data.grade),
         durationMinutes: duration,
+        showAnswers: data.showAnswers !== false,
         sourceId: source.id,
         startPage: start,
         endPage: end,
@@ -994,15 +1157,23 @@ export class ContentService {
     });
   }
 
-  staffExams(userId: string, role: Role) {
-    return this.prisma.exam.findMany({
+  async staffExams(userId: string, role: Role) {
+    const items = await this.prisma.exam.findMany({
       where: role === Role.ADMIN ? {} : { createdById: userId },
       include: {
         questions: { orderBy: { position: "asc" } },
         source: { select: { fileName: true, mimeType: true } },
       },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
+    return items.map((exam) => ({
+      ...exam,
+      source: {
+        ...exam.source,
+        fileName: normalizeOriginalFilename(exam.source.fileName),
+      },
+    }));
   }
 
   examTemplate() {
@@ -1081,7 +1252,7 @@ export class ContentService {
     if (
       !Number.isInteger(position) ||
       position < 1 ||
-      position > 200 ||
+      position > 500 ||
       !Number.isFinite(points) ||
       points <= 0 ||
       points > 100 ||
@@ -1101,8 +1272,8 @@ export class ContentService {
           kind: body.kind || undefined,
           taskType: body.taskType || undefined,
           points,
-          content: body.content?.trim().slice(0, 4000) || undefined,
-          section: body.section?.trim().slice(0, 1000) || undefined,
+          content: body.content?.trim().slice(0, 8000) || undefined,
+          section: body.section?.trim().slice(0, 8000) || undefined,
           options: Array.isArray(body.options)
             ? (body.options
                 .map((option) => String(option).trim().slice(0, 1000))
@@ -1121,8 +1292,8 @@ export class ContentService {
           taskType: body.taskType || QuestionTaskType.GENERAL,
           points,
           sourceLabel: String(position),
-          content: body.content?.trim().slice(0, 4000) || `Câu ${position}`,
-          section: body.section?.trim().slice(0, 1000) || null,
+          content: body.content?.trim().slice(0, 8000) || `Câu ${position}`,
+          section: body.section?.trim().slice(0, 8000) || null,
           options: (Array.isArray(body.options)
             ? body.options
                 .map((option) => String(option).trim().slice(0, 1000))
@@ -1230,6 +1401,8 @@ export class ContentService {
     userId: string,
     role: Role,
   ) {
+    if (!Number.isInteger(position) || position < 1 || position > 500)
+      throw new BadRequestException("Vị trí câu hỏi không hợp lệ.");
     const exam = await this.ownedExam(examId, userId, role);
     if (exam.status === ContentStatus.PUBLISHED)
       throw new BadRequestException("Đưa đề về bản nháp trước khi sửa câu.");
@@ -1340,6 +1513,19 @@ export class ContentService {
     return this.prisma.exam.update({ where: { id }, data: { status } });
   }
 
+  async setExamAnswerVisibility(
+    id: string,
+    showAnswers: boolean,
+    userId: string,
+    role: Role,
+  ) {
+    await this.ownedExam(id, userId, role);
+    return this.prisma.exam.update({
+      where: { id },
+      data: { showAnswers: Boolean(showAnswers) },
+    });
+  }
+
   private async ownedExam(id: string, userId: string, role: Role) {
     const exam = await this.prisma.exam.findUnique({
       where: { id },
@@ -1351,8 +1537,8 @@ export class ContentService {
     return exam;
   }
 
-  publicExams(level?: SchoolLevel, grade?: number) {
-    return this.prisma.exam.findMany({
+  async publicExams(level?: SchoolLevel, grade?: number) {
+    const items = await this.prisma.exam.findMany({
       where: {
         status: ContentStatus.PUBLISHED,
         access: ExamAccess.PUBLIC,
@@ -1367,14 +1553,23 @@ export class ContentService {
         schoolLevel: true,
         grade: true,
         durationMinutes: true,
+        showAnswers: true,
         source: { select: { fileName: true, mimeType: true } },
         questions: {
-          select: { position: true, kind: true, points: true, content: true },
+          select: { position: true, kind: true, points: true },
           orderBy: { position: "asc" },
         },
       },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
+    return items.map((exam) => ({
+      ...exam,
+      source: {
+        ...exam.source,
+        fileName: normalizeOriginalFilename(exam.source.fileName),
+      },
+    }));
   }
   async publicExam(slugValue: string) {
     const exam = await this.prisma.exam.findFirst({
@@ -1391,6 +1586,7 @@ export class ContentService {
         schoolLevel: true,
         grade: true,
         durationMinutes: true,
+        showAnswers: true,
         source: { select: { fileName: true, mimeType: true } },
         questions: {
           select: {
@@ -1410,7 +1606,13 @@ export class ContentService {
       },
     });
     if (!exam) throw new NotFoundException();
-    return exam;
+    return {
+      ...exam,
+      source: {
+        ...exam.source,
+        fileName: normalizeOriginalFilename(exam.source.fileName),
+      },
+    };
   }
   async examFile(id: string, userId?: string, role?: Role) {
     const exam = await this.prisma.exam.findUnique({
@@ -1422,13 +1624,20 @@ export class ContentService {
       (exam.status !== ContentStatus.PUBLISHED &&
         role !== Role.ADMIN &&
         exam.createdById !== userId) ||
-      (exam.access !== ExamAccess.PUBLIC && !userId)
+      (exam.access !== ExamAccess.PUBLIC && !userId) ||
+      (!role && exam.source.mimeType.includes("spreadsheet"))
     )
       throw new NotFoundException();
+    const filePath = safeFilePath(exam.fileKey);
+    try {
+      await access(filePath);
+    } catch {
+      throw new NotFoundException();
+    }
     return {
-      buffer: await readFile(join(root, exam.fileKey)),
+      stream: createReadStream(filePath),
       mime: exam.source.mimeType,
-      name: exam.source.fileName,
+      name: normalizeOriginalFilename(exam.source.fileName),
     };
   }
   private scoreAttempt(
@@ -1441,6 +1650,7 @@ export class ContentService {
     }[],
     answers: Record<string, string>,
     manualScores: Record<string, number> = {},
+    includeCorrectAnswers = true,
   ) {
     let earned = 0;
     let possible = 0;
@@ -1464,14 +1674,17 @@ export class ContentService {
         return { position: question.position, status: "PENDING" };
       }
       possible += question.points;
-      const correct =
-        normalizedScoringAnswer(response, question.kind, question.taskType) ===
-        normalizedScoringAnswer(question.answer, question.kind, question.taskType);
+      const correct = isScoringAnswerMatch(
+        response,
+        question.answer,
+        question.kind,
+        question.taskType,
+      );
       if (correct) earned += question.points;
       return {
         position: question.position,
         status: correct ? "CORRECT" : "INCORRECT",
-        correctAnswer: question.answer,
+        ...(includeCorrectAnswers ? { correctAnswer: question.answer } : {}),
       };
     });
     return {
@@ -1481,6 +1694,7 @@ export class ContentService {
       manualPossible,
       pending,
       provisional: pending > 0,
+      showAnswers: includeCorrectAnswers,
       details,
     };
   }
@@ -1512,48 +1726,170 @@ export class ContentService {
 
   async startAttempt(
     examId: string,
-    data: { participantName?: string; attemptId?: string; guestToken?: string },
+    data: {
+      participantName?: string;
+      attemptId?: string;
+      guestToken?: string;
+      forceNew?: boolean;
+      preferNew?: boolean;
+    },
     userId?: string,
   ) {
     const exam = await this.publicExamWithQuestions(examId);
-    const payload = (attempt: {
-      id: string;
-      answers: Prisma.JsonValue;
-      participantName: string | null;
-      status: AttemptStatus;
-      updatedAt: Date;
-      manualScores: Prisma.JsonValue | null;
-      teacherFeedback: string | null;
-    }) => ({
+    const durationMs = Math.max(1, exam.durationMinutes || 45) * 60 * 1000;
+    const computeRemaining = (createdAt: Date, status: AttemptStatus) =>
+      status === AttemptStatus.DRAFT
+        ? Math.max(
+            0,
+            Math.ceil((createdAt.getTime() + durationMs - Date.now()) / 1000),
+          )
+        : 0;
+    const payload = (
+      attempt: {
+        id: string;
+        answers: Prisma.JsonValue;
+        participantName: string | null;
+        status: AttemptStatus;
+        createdAt: Date;
+        updatedAt: Date;
+        manualScores: Prisma.JsonValue | null;
+        teacherFeedback: string | null;
+      },
+      extra?: { autoSubmittedExpired?: boolean; guestToken?: string },
+    ) => ({
       attemptId: attempt.id,
       answers: attempt.answers,
       participantName: attempt.participantName,
       status: attempt.status,
+      startedAt: attempt.createdAt,
       savedAt: attempt.updatedAt,
+      remainingSeconds: computeRemaining(attempt.createdAt, attempt.status),
       teacherFeedback: attempt.teacherFeedback,
+      autoSubmittedExpired: extra?.autoSubmittedExpired || false,
+      ...(extra?.guestToken ? { guestToken: extra.guestToken } : {}),
       result:
         attempt.status === AttemptStatus.DRAFT
           ? null
           : this.scoreAttempt(
               exam.questions,
-              cleanAnswers(attempt.answers),
+              cleanAnswers(attempt.answers || {}),
               manualScoresRecord(attempt.manualScores),
+              exam.showAnswers,
             ),
     });
-    if (data.attemptId) {
+
+    const resolveDraftAttempt = async (
+      attempt: {
+        id: string;
+        answers: Prisma.JsonValue;
+        participantName: string | null;
+        status: AttemptStatus;
+        createdAt: Date;
+        updatedAt: Date;
+        manualScores: Prisma.JsonValue | null;
+        teacherFeedback: string | null;
+      },
+      guestToken?: string,
+    ) => {
+      if (attempt.status !== AttemptStatus.DRAFT) {
+        return payload(attempt, { guestToken });
+      }
+      if (Date.now() < attempt.createdAt.getTime() + durationMs) {
+        return payload(attempt, { guestToken });
+      }
+      const existingAnswers = cleanAnswers(attempt.answers || {});
+      const hasAnswers = Object.values(existingAnswers).some(
+        (val) => val.trim().length > 0,
+      );
+      if (hasAnswers) {
+        const score = this.scoreAttempt(exam.questions, existingAnswers);
+        const finalized = await this.prisma.examAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            earned: score.earned,
+            possible: score.possible,
+            manualEarned: 0,
+            manualPossible: score.manualPossible,
+            pending: score.pending,
+            status:
+              score.pending > 0
+                ? AttemptStatus.SUBMITTED
+                : AttemptStatus.GRADED,
+            submittedAt: new Date(attempt.createdAt.getTime() + durationMs),
+          },
+        });
+        return payload(finalized, { autoSubmittedExpired: true, guestToken });
+      }
+      const refreshedNow = new Date();
+      const refreshed = await this.prisma.examAttempt.update({
+        where: { id: attempt.id },
+        data: { createdAt: refreshedNow, updatedAt: refreshedNow, answers: {} },
+      });
+      return payload(refreshed, { guestToken });
+    };
+
+    if (data.attemptId && !data.forceNew) {
       const attempt = await this.prisma.examAttempt.findFirst({
         where: { id: data.attemptId, examId },
       });
-      if (!attempt) throw new NotFoundException("Không tìm thấy bài làm.");
-      this.assertAttemptAccess(attempt, userId, data.guestToken);
-      return payload(attempt);
+      if (attempt) {
+        try {
+          this.assertAttemptAccess(attempt, userId, data.guestToken);
+          return resolveDraftAttempt(attempt, data.guestToken);
+        } catch {
+          // Nếu attemptId cũ không thuộc về user này (ví dụ tàn dư từ phiên khách), bỏ qua và tiếp tục luồng của user
+        }
+      }
     }
     if (userId) {
-      const existing = await this.prisma.examAttempt.findFirst({
-        where: { examId, userId, status: AttemptStatus.DRAFT },
-        orderBy: { updatedAt: "desc" },
-      });
-      if (existing) return payload(existing);
+      if (data.forceNew) {
+        const openDrafts = await this.prisma.examAttempt.findMany({
+          where: { examId, userId, status: AttemptStatus.DRAFT },
+        });
+        for (const draft of openDrafts) {
+          const draftAnswers = cleanAnswers(draft.answers || {});
+          const hasAnswers = Object.values(draftAnswers).some(
+            (val) => val.trim().length > 0,
+          );
+          if (hasAnswers) {
+            const score = this.scoreAttempt(exam.questions, draftAnswers);
+            await this.prisma.examAttempt.update({
+              where: { id: draft.id },
+              data: {
+                earned: score.earned,
+                possible: score.possible,
+                manualEarned: 0,
+                manualPossible: score.manualPossible,
+                pending: score.pending,
+                status:
+                  score.pending > 0
+                    ? AttemptStatus.SUBMITTED
+                    : AttemptStatus.GRADED,
+                submittedAt: new Date(),
+              },
+            });
+          } else {
+            await this.prisma.examAttempt.delete({ where: { id: draft.id } });
+          }
+        }
+      } else {
+        const existingDraft = await this.prisma.examAttempt.findFirst({
+          where: { examId, userId, status: AttemptStatus.DRAFT },
+          orderBy: { updatedAt: "desc" },
+        });
+        if (existingDraft) return resolveDraftAttempt(existingDraft);
+        const latestCompleted = data.preferNew
+          ? null
+          : await this.prisma.examAttempt.findFirst({
+          where: {
+            examId,
+            userId,
+            status: { in: [AttemptStatus.SUBMITTED, AttemptStatus.GRADED] },
+          },
+          orderBy: { updatedAt: "desc" },
+        });
+        if (latestCompleted) return payload(latestCompleted);
+      }
       const user = await this.prisma.user.findUnique({ where: { id: userId } });
       if (!user) throw new NotFoundException();
       const attempt = await this.prisma.examAttempt.create({
@@ -1584,11 +1920,7 @@ export class ContentService {
         status: AttemptStatus.DRAFT,
       },
     });
-    return {
-      ...payload(attempt),
-      attemptId: attempt.id,
-      guestToken,
-    };
+    return payload(attempt, { guestToken });
   }
 
   async saveAttempt(
@@ -1598,7 +1930,7 @@ export class ContentService {
     userId?: string,
     guestToken?: string,
   ) {
-    await this.publicExamWithQuestions(examId);
+    const exam = await this.publicExamWithQuestions(examId);
     const attempt = await this.prisma.examAttempt.findFirst({
       where: { id: attemptId, examId },
     });
@@ -1606,12 +1938,22 @@ export class ContentService {
     this.assertAttemptAccess(attempt, userId, guestToken);
     if (attempt.status !== AttemptStatus.DRAFT)
       throw new BadRequestException("Bài đã nộp nên không thể sửa.");
+    const durationMs = Math.max(1, exam.durationMinutes || 45) * 60 * 1000;
+    if (Date.now() > attempt.createdAt.getTime() + durationMs + 30_000)
+      throw new BadRequestException("Đã hết thời gian làm bài.");
     const answers = cleanAnswers(answersValue);
     const updated = await this.prisma.examAttempt.update({
       where: { id: attemptId },
       data: { answers: answers as Prisma.InputJsonValue },
     });
-    return { saved: true, savedAt: updated.updatedAt };
+    return {
+      saved: true,
+      savedAt: updated.updatedAt,
+      remainingSeconds: Math.max(
+        0,
+        Math.ceil((attempt.createdAt.getTime() + durationMs - Date.now()) / 1000),
+      ),
+    };
   }
 
   async submitAttempt(
@@ -1627,8 +1969,20 @@ export class ContentService {
     });
     if (!attempt) throw new NotFoundException("Không tìm thấy bài làm.");
     this.assertAttemptAccess(attempt, userId, guestToken);
-    const answers = cleanAnswers(answersValue);
-    const score = this.scoreAttempt(exam.questions, answers);
+    if (attempt.status !== AttemptStatus.DRAFT)
+      throw new BadRequestException("Bài làm này đã được nộp trước đó.");
+    const durationMs = Math.max(1, exam.durationMinutes || 45) * 60 * 1000;
+    const isPastGrace =
+      Date.now() > attempt.createdAt.getTime() + durationMs + 60_000;
+    const answers = isPastGrace
+      ? cleanAnswers(attempt.answers || {})
+      : cleanAnswers(answersValue);
+    const score = this.scoreAttempt(
+      exam.questions,
+      answers,
+      {},
+      exam.showAnswers,
+    );
     await this.prisma.examAttempt.update({
       where: { id: attemptId },
       data: {
@@ -1649,7 +2003,12 @@ export class ContentService {
   async submit(id: string, answersValue: unknown, userId?: string) {
     const exam = await this.publicExamWithQuestions(id);
     const answers = cleanAnswers(answersValue);
-    const score = this.scoreAttempt(exam.questions, answers);
+    const score = this.scoreAttempt(
+      exam.questions,
+      answers,
+      {},
+      exam.showAnswers,
+    );
     const attempt = await this.prisma.examAttempt.create({
       data: {
         examId: id,
@@ -1668,10 +2027,69 @@ export class ContentService {
     return { attemptId: attempt.id, ...score };
   }
 
+  private async reconcileExpiredDrafts(where: Prisma.ExamAttemptWhereInput = {}) {
+    const drafts = await this.prisma.examAttempt.findMany({
+      where: { ...where, status: AttemptStatus.DRAFT },
+      include: {
+        exam: {
+          select: {
+            durationMinutes: true,
+            questions: {
+              select: {
+                position: true,
+                kind: true,
+                taskType: true,
+                answer: true,
+                points: true,
+              },
+            },
+          },
+        },
+      },
+      take: 200,
+    });
+    const now = Date.now();
+    for (const draft of drafts) {
+      const durationMs =
+        Math.max(1, draft.exam.durationMinutes || 45) * 60 * 1000;
+      if (now <= draft.createdAt.getTime() + durationMs + 60_000) continue;
+      const cleaned = cleanAnswers(draft.answers || {});
+      const hasAnswers = Object.values(cleaned).some(
+        (value) => value.trim().length > 0,
+      );
+      if (!hasAnswers) {
+        await this.prisma.examAttempt
+          .delete({ where: { id: draft.id } })
+          .catch(() => undefined);
+        continue;
+      }
+      const score = this.scoreAttempt(draft.exam.questions, cleaned);
+      await this.prisma.examAttempt
+        .update({
+          where: { id: draft.id },
+          data: {
+            earned: score.earned,
+            possible: score.possible,
+            manualEarned: 0,
+            manualPossible: score.manualPossible,
+            pending: score.pending,
+            status:
+              score.pending > 0
+                ? AttemptStatus.SUBMITTED
+                : AttemptStatus.GRADED,
+            submittedAt: new Date(draft.createdAt.getTime() + durationMs),
+          },
+        })
+        .catch(() => undefined);
+    }
+  }
+
   async staffAttempts(userId: string, role: Role) {
+    const scopeWhere: Prisma.ExamAttemptWhereInput =
+      role === Role.ADMIN ? {} : { exam: { is: { createdById: userId } } };
+    await this.reconcileExpiredDrafts(scopeWhere);
     const attempts = await this.prisma.examAttempt.findMany({
-      where:
-        role === Role.ADMIN ? {} : { exam: { is: { createdById: userId } } },
+      where: scopeWhere,
       select: {
         id: true,
         participantName: true,
@@ -1710,23 +2128,30 @@ export class ContentService {
         },
       },
       orderBy: { updatedAt: "desc" },
+      take: 200,
     });
-    return attempts.map((attempt) => {
-      if (attempt.status === AttemptStatus.DRAFT) return attempt;
-      const score = this.scoreAttempt(
-        attempt.exam.questions,
-        cleanAnswers(attempt.answers),
-        manualScoresRecord(attempt.manualScores),
-      );
-      return {
-        ...attempt,
-        earned: score.earned,
-        possible: score.possible,
-        manualEarned: score.manualEarned,
-        manualPossible: score.manualPossible,
-        pending: score.pending,
-      };
-    });
+    return attempts
+      .filter((attempt) => {
+        if (attempt.status !== AttemptStatus.DRAFT) return true;
+        const cleaned = cleanAnswers(attempt.answers || {});
+        return Object.values(cleaned).some((val) => val.trim().length > 0);
+      })
+      .map((attempt) => {
+        if (attempt.status === AttemptStatus.DRAFT) return attempt;
+        const score = this.scoreAttempt(
+          attempt.exam.questions,
+          cleanAnswers(attempt.answers),
+          manualScoresRecord(attempt.manualScores),
+        );
+        return {
+          ...attempt,
+          earned: score.earned,
+          possible: score.possible,
+          manualEarned: score.manualEarned,
+          manualPossible: score.manualPossible,
+          pending: score.pending,
+        };
+      });
   }
 
   async gradeAttempt(
@@ -1792,6 +2217,7 @@ export class ContentService {
   }
 
   async history(userId: string) {
+    await this.reconcileExpiredDrafts({ userId });
     const attempts = await this.prisma.examAttempt.findMany({
       where: { userId },
       select: {
@@ -1825,6 +2251,7 @@ export class ContentService {
         },
       },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
     return attempts.map((attempt) => {
       const { answers, manualScores, exam, ...historyItem } = attempt;
@@ -1903,12 +2330,12 @@ export class ContentService {
         title: body.title.slice(0, 160),
         summary: (body.summary || "").slice(0, 220),
         category: body.category.slice(0, 80),
-        level: `Lớp ${body.grade}`,
+        level: Number(body.grade) === 0 ? "Mầm non" : `Lớp ${body.grade}`,
         type: "DOCUMENT",
         schoolLevel: body.schoolLevel as SchoolLevel,
         grade: Number(body.grade),
         fileKey,
-        fileName: file.originalname.slice(0, 180),
+        fileName: normalizeOriginalFilename(file.originalname).slice(0, 180),
         mimeType,
         sizeBytes: file.size,
         checksum,
@@ -1918,11 +2345,16 @@ export class ContentService {
       },
     });
   }
-  staffMaterials(userId: string, role: Role) {
-    return this.prisma.material.findMany({
+  async staffMaterials(userId: string, role: Role) {
+    const items = await this.prisma.material.findMany({
       where: role === Role.ADMIN ? {} : { createdById: userId },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
+    return items.map((item) => ({
+      ...item,
+      fileName: item.fileName ? normalizeOriginalFilename(item.fileName) : item.fileName,
+    }));
   }
   async staffMaterialFile(id: string, userId: string, role: Role) {
     const item = await this.prisma.material.findUnique({ where: { id } });
@@ -1932,9 +2364,15 @@ export class ContentService {
       (role !== Role.ADMIN && item.createdById !== userId)
     )
       throw new NotFoundException();
+    const filePath = safeFilePath(item.fileKey);
+    try {
+      await access(filePath);
+    } catch {
+      throw new NotFoundException();
+    }
     return {
-      buffer: await readFile(join(root, item.fileKey)),
-      name: item.fileName || "tai-lieu",
+      stream: createReadStream(filePath),
+      name: normalizeOriginalFilename(item.fileName || "tai-lieu"),
       mime: item.mimeType || "application/octet-stream",
     };
   }
@@ -1959,8 +2397,8 @@ export class ContentService {
       },
     });
   }
-  publicMaterials(level?: SchoolLevel, grade?: number) {
-    return this.prisma.material.findMany({
+  async publicMaterials(level?: SchoolLevel, grade?: number) {
+    const items = await this.prisma.material.findMany({
       where: {
         isPublic: true,
         ...(level ? { schoolLevel: level } : {}),
@@ -1981,7 +2419,12 @@ export class ContentService {
         mimeType: true,
       },
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
+    return items.map((item) => ({
+      ...item,
+      fileName: item.fileName ? normalizeOriginalFilename(item.fileName) : item.fileName,
+    }));
   }
   async publicMaterial(slugValue: string) {
     const item = await this.prisma.material.findFirst({
@@ -2002,16 +2445,60 @@ export class ContentService {
       },
     });
     if (!item) throw new NotFoundException();
-    return item;
+    const candidates = await this.prisma.material.findMany({
+      where: { isPublic: true, id: { not: item.id } },
+      select: {
+        id: true,
+        slug: true,
+        title: true,
+        summary: true,
+        category: true,
+        schoolLevel: true,
+        grade: true,
+        type: true,
+        driveUrl: true,
+        youtubeUrl: true,
+        fileName: true,
+        mimeType: true,
+      },
+      orderBy: { createdAt: "desc" },
+      take: 30,
+    });
+    const related = candidates
+      .map((candidate) => ({
+        item: {
+          ...candidate,
+          fileName: candidate.fileName ? normalizeOriginalFilename(candidate.fileName) : candidate.fileName,
+        },
+        score:
+          (candidate.category === item.category ? 4 : 0) +
+          (candidate.grade === item.grade ? 2 : 0) +
+          (candidate.schoolLevel === item.schoolLevel ? 1 : 0) +
+          (candidate.type === item.type ? 1 : 0),
+      }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 4)
+      .map((entry) => entry.item);
+    return {
+      ...item,
+      fileName: item.fileName ? normalizeOriginalFilename(item.fileName) : item.fileName,
+      related,
+    };
   }
   async materialFile(id: string) {
     const item = await this.prisma.material.findFirst({
       where: { id, isPublic: true },
     });
     if (!item || !item.fileKey) throw new NotFoundException();
+    const filePath = safeFilePath(item.fileKey);
+    try {
+      await access(filePath);
+    } catch {
+      throw new NotFoundException();
+    }
     return {
-      buffer: await readFile(join(root, item.fileKey)),
-      name: item.fileName || "tai-lieu",
+      stream: createReadStream(filePath),
+      name: normalizeOriginalFilename(item.fileName || "tai-lieu"),
       mime: item.mimeType || "application/octet-stream",
     };
   }
@@ -2053,13 +2540,16 @@ export class ContentService {
   applications() {
     return this.prisma.teacherApplication.findMany({
       orderBy: { createdAt: "desc" },
+      take: 200,
     });
   }
-  setApplicationStatus(id: string, status: string) {
+  async setApplicationStatus(id: string, status: string) {
     if (
       !["NEW", "CONTACTED", "INTERVIEW", "HIRED", "REJECTED"].includes(status)
     )
-      throw new BadRequestException();
+      throw new BadRequestException("Trạng thái hồ sơ không hợp lệ.");
+    const existing = await this.prisma.teacherApplication.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException("Không tìm thấy hồ sơ ứng tuyển.");
     return this.prisma.teacherApplication.update({
       where: { id },
       data: { status: status as "NEW" },

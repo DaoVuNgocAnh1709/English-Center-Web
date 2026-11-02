@@ -11,6 +11,7 @@ import {
   FileText,
 } from "lucide-react";
 import { gradeLabel } from "@/lib/content-options";
+import { safeExternalUrl } from "@/lib/safe-url";
 
 type Material = {
   id: string;
@@ -25,6 +26,7 @@ type Material = {
   mimeType: string | null;
   driveUrl: string | null;
   youtubeUrl: string | null;
+  related?: Material[];
 };
 
 const api = process.env.NEXT_PUBLIC_API_URL || "/api";
@@ -32,38 +34,36 @@ const api = process.env.NEXT_PUBLIC_API_URL || "/api";
 export default function MaterialPage() {
   const { slug } = useParams<{ slug: string }>();
   const [item, setItem] = useState<Material | null>(null);
-  const [materials, setMaterials] = useState<Material[]>([]);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([
-      fetch(`${api}/public-content/materials/${encodeURIComponent(slug)}`),
-      fetch(`${api}/public-content/materials`),
-    ])
-      .then(async ([detailResponse, listResponse]) => {
+    let cancelled = false;
+    fetch(`${api}/public-content/materials/${encodeURIComponent(slug)}`)
+      .then(async (detailResponse) => {
         if (!detailResponse.ok) throw new Error();
-        setItem(await detailResponse.json());
-        setMaterials(listResponse.ok ? await listResponse.json() : []);
+        const data = (await detailResponse.json()) as Material;
+        if (!cancelled) {
+          setItem(data);
+          setError("");
+          setLoading(false);
+        }
       })
-      .catch(() => setError("Không tìm thấy tài liệu."));
+      .catch(() => {
+        if (!cancelled) {
+          setItem(null);
+          setError("Không tìm thấy tài liệu.");
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [slug]);
 
-  const related = useMemo(() => {
-    if (!item) return [];
-    return materials
-      .filter((candidate) => candidate.id !== item.id)
-      .map((candidate) => ({
-        item: candidate,
-        score:
-          (candidate.category === item.category ? 4 : 0) +
-          (candidate.grade === item.grade ? 2 : 0) +
-          (candidate.schoolLevel === item.schoolLevel ? 1 : 0) +
-          (candidate.type === item.type ? 1 : 0),
-      }))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 4)
-      .map((entry) => entry.item);
-  }, [item, materials]);
+  const related = useMemo(() => item?.related || [], [item]);
+  const driveUrl = safeExternalUrl(item?.driveUrl);
+  const youtubeUrl = safeExternalUrl(item?.youtubeUrl);
 
   return (
     <section className="min-h-[70vh] bg-[#f3f6fa] py-7 md:py-9">
@@ -74,6 +74,9 @@ export default function MaterialPage() {
         >
           <ArrowLeft size={16} /> Thư viện
         </Link>
+        {loading && !error && (
+          <p className="mt-8 text-sm font-semibold text-slate-500">Đang tải tài liệu...</p>
+        )}
         {error && <p className="mt-8 text-red-700">{error}</p>}
         {item && (
           <>
@@ -97,21 +100,21 @@ export default function MaterialPage() {
                       <Download size={17} /> Tải tài liệu
                     </a>
                   )}
-                  {item.driveUrl && (
+                  {driveUrl && (
                     <a
-                      href={item.driveUrl}
+                      href={driveUrl}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="btn-outline min-h-11 px-4"
                     >
                       Google Drive <ExternalLink size={15} />
                     </a>
                   )}
-                  {item.youtubeUrl && (
+                  {youtubeUrl && (
                     <a
-                      href={item.youtubeUrl}
+                      href={youtubeUrl}
                       target="_blank"
-                      rel="noreferrer"
+                      rel="noopener noreferrer"
                       className="btn-outline min-h-11 px-4"
                     >
                       Xem video <ExternalLink size={15} />
@@ -122,7 +125,7 @@ export default function MaterialPage() {
             </header>
 
             <div className="mt-5 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_310px]">
-              <main className="surface-panel min-w-0 overflow-hidden">
+              <div className="surface-panel min-w-0 overflow-hidden">
                 <div className="flex items-center gap-2 border-b border-slate-100 px-5 py-4">
                   <FileText size={18} className="text-[#d91f2a]" />
                   <h2 className="font-extrabold text-[#092b4c]">
@@ -146,7 +149,7 @@ export default function MaterialPage() {
                     </div>
                   </div>
                 )}
-              </main>
+              </div>
 
               <aside className="surface-panel overflow-hidden lg:sticky lg:top-24">
                 <div className="border-b border-slate-100 px-5 py-4">

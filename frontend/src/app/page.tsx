@@ -14,9 +14,9 @@ const programs = [
 ];
 
 const news = [
-  { tag: "Kinh nghiệm học", date: "28.10.2026", title: "5 cách giúp trẻ duy trì thói quen tiếng Anh tại nhà", image: "/images/learning-project.png" },
-  { tag: "Phương pháp", date: "20.10.2026", title: "Học từ vựng thế nào để hiểu và nhớ lâu hơn?", image: "/images/hero-classroom.png" },
-  { tag: "Hoạt động lớp", date: "12.10.2026", title: "Một buổi học giao tiếp tại trung tâm diễn ra như thế nào?", image: "/images/learning-project.png" },
+  { slug: "thoi-quen-hoc-tai-nha", tag: "Kinh nghiệm học", date: "28.10.2026", title: "5 cách giúp trẻ duy trì thói quen tiếng Anh tại nhà", image: "/images/learning-project.png" },
+  { slug: "hoc-tu-vung-hieu-qua", tag: "Phương pháp", date: "20.10.2026", title: "Học từ vựng thế nào để hiểu và nhớ lâu hơn?", image: "/images/hero-classroom.png" },
+  { slug: "buoi-hoc-giao-tiep", tag: "Hoạt động lớp", date: "12.10.2026", title: "Một buổi học giao tiếp tại trung tâm diễn ra như thế nào?", image: "/images/learning-project.png" },
 ];
 
 export default function Home() {
@@ -60,7 +60,7 @@ export default function Home() {
                 </Link>
               ))}
             </div>
-            <Link href="#dang-ky" className="mt-8 inline-flex items-center gap-2 text-sm font-extrabold text-[#123d68]">Xem tất cả chương trình <ArrowRight size={17} /></Link>
+            <Link href="/khoa-hoc" className="mt-8 inline-flex items-center gap-2 text-sm font-extrabold text-[#123d68]">Xem tất cả chương trình <ArrowRight size={17} /></Link>
           </Reveal>
           <Reveal delay={120} className="relative">
             <div className="image-zoom relative overflow-hidden rounded-[22px] shadow-[0_24px_70px_rgba(15,35,58,.18)]">
@@ -131,9 +131,9 @@ export default function Home() {
 
       <section id="tin-tuc" className="bg-[#f5f7fa] py-20 md:py-28">
         <div className="container-shell">
-          <Reveal className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><h2 className="section-title">Tin tức và kinh nghiệm</h2><Link href="#" className="inline-flex items-center gap-2 text-sm font-extrabold text-[#123d68]">Xem tất cả <ArrowRight size={17} /></Link></Reveal>
+          <Reveal className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end"><h2 className="section-title">Tin tức và kinh nghiệm</h2><Link href="/tin-tuc" className="inline-flex items-center gap-2 text-sm font-extrabold text-[#123d68]">Xem tất cả <ArrowRight size={17} /></Link></Reveal>
           <div className="mt-11 grid gap-7 md:grid-cols-3">
-            {news.map((item, index) => <Reveal key={item.title} delay={index * 90}><article className="soft-card image-zoom group h-full overflow-hidden"><div className="relative h-56 overflow-hidden"><Image src={item.image} alt="Ảnh minh họa bài viết" fill className="object-cover" sizes="(max-width: 768px) 100vw, 33vw" /></div><div className="p-7"><div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#d91f2a]"><span>{item.tag}</span><span className="text-slate-300">•</span><span className="text-slate-500">{item.date}</span></div><h3 className="mt-4 text-lg font-extrabold leading-7 text-[#092b4c] transition-colors group-hover:text-[#d91f2a]">{item.title}</h3><Link href="#" className="mt-5 inline-flex items-center gap-1 text-sm font-bold text-[#123d68]">Đọc thêm <ChevronRight size={16} /></Link></div></article></Reveal>)}
+            {news.map((item, index) => <Reveal key={item.title} delay={index * 90}><article className="soft-card image-zoom group h-full overflow-hidden"><div className="relative h-56 overflow-hidden"><Image src={item.image} alt="Ảnh minh họa bài viết" fill className="object-cover" sizes="(max-width: 768px) 100vw, 33vw" /></div><div className="p-7"><div className="flex items-center gap-2 text-[11px] font-extrabold uppercase tracking-[.1em] text-[#d91f2a]"><span>{item.tag}</span><span className="text-slate-300">•</span><span className="text-slate-500">{item.date}</span></div><h3 className="mt-4 text-lg font-extrabold leading-7 text-[#092b4c] transition-colors group-hover:text-[#d91f2a]">{item.title}</h3><Link href={`/tin-tuc/${item.slug}`} className="mt-5 inline-flex items-center gap-1 text-sm font-bold text-[#123d68]">Đọc thêm <ChevronRight size={16} /></Link></div></article></Reveal>)}
           </div>
         </div>
       </section>

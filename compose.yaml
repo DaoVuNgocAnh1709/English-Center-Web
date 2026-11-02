@@ -66,18 +66,17 @@ services:
       AI_IMPORT_REVIEW_ENABLED: ${AI_IMPORT_REVIEW_ENABLED:-true}
       GEMINI_REVIEW_MODEL: ${GEMINI_REVIEW_MODEL:-gemini-3.5-flash-lite}
       SOURCE_RETENTION_DAYS: ${SOURCE_RETENTION_DAYS:?Set SOURCE_RETENTION_DAYS in .env}
-      CLAMAV_HOST: clamav
-      CLAMAV_PORT: 3310
-      CLAMAV_REQUIRED: ${CLAMAV_REQUIRED:?Set CLAMAV_REQUIRED in .env}
-      CLAMAV_TIMEOUT_MS: ${CLAMAV_TIMEOUT_MS:?Set CLAMAV_TIMEOUT_MS in .env}
+      CLAMAV_ENABLED: ${CLAMAV_ENABLED:-false}
+      CLAMAV_HOST: ${CLAMAV_HOST:-}
+      CLAMAV_PORT: ${CLAMAV_PORT:-3310}
+      CLAMAV_REQUIRED: ${CLAMAV_REQUIRED:-false}
+      CLAMAV_TIMEOUT_MS: ${CLAMAV_TIMEOUT_MS:-30000}
     volumes:
       - ./backend:/app
       - backend_node_modules:/app/node_modules
       - uploads_data:/app/uploads
     depends_on:
       database:
-        condition: service_healthy
-      clamav:
         condition: service_healthy
     ports:
       - "4000:4000"
@@ -90,6 +89,7 @@ services:
     restart: unless-stopped
 
   clamav:
+    profiles: ["antivirus"]
     image: clamav/clamav:stable
     volumes:
       - clamav_data:/var/lib/clamav
@@ -125,6 +125,8 @@ services:
       target: development
     environment:
       NODE_ENV: development
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
       NEXT_PUBLIC_API_URL: /api
       INTERNAL_API_URL: http://backend:4000/api
     volumes:
@@ -134,7 +136,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    command: npm run dev
+    command: sh -c "find .next -mindepth 1 -delete 2>/dev/null || true; npm run dev"
     restart: unless-stopped
 
   nginx:

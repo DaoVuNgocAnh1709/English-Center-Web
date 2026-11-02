@@ -22,6 +22,7 @@ import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { Roles } from "../auth/roles.decorator";
 import { RolesGuard } from "../auth/roles.guard";
 import { AccessPayload } from "../auth/auth.types";
+import { PrismaService } from "../prisma/prisma.service";
 import { ContentService, Upload } from "./content.service";
 import { JwtService } from "@nestjs/jwt";
 import { Req } from "@nestjs/common";
@@ -129,10 +130,23 @@ export class StaffContentController {
       durationMinutes?: number;
       answerText?: string;
       extractQuestions?: boolean;
+      showAnswers?: boolean;
     },
     @CurrentUser() user: AccessPayload,
   ) {
     return this.service.createExam(body, user.sub, user.role);
+  }
+  @Patch("exams/:id/answer-visibility") examAnswerVisibility(
+    @Param("id") id: string,
+    @Body("showAnswers") showAnswers: boolean,
+    @CurrentUser() user: AccessPayload,
+  ) {
+    return this.service.setExamAnswerVisibility(
+      id,
+      Boolean(showAnswers),
+      user.sub,
+      user.role,
+    );
   }
   @Patch("exams/:id/keys") keys(
     @Param("id") id: string,
@@ -209,8 +223,8 @@ export class StaffContentController {
         file.mime === "application/pdf" || file.mime.startsWith("image/")
           ? "inline"
           : `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      )
-      .send(file.buffer);
+      );
+    file.stream.pipe(res);
   }
   @Get("materials") materials(@CurrentUser() user: AccessPayload) {
     return this.service.staffMaterials(user.sub, user.role);
@@ -228,8 +242,8 @@ export class StaffContentController {
         file.mime === "application/pdf"
           ? "inline"
           : `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      )
-      .send(file.buffer);
+      );
+    file.stream.pipe(res);
   }
   @Post("materials")
   @UseInterceptors(
@@ -265,16 +279,29 @@ export class PublicContentController {
   constructor(
     private readonly service: ContentService,
     private readonly jwt: JwtService,
+    private readonly prisma: PrismaService,
   ) {}
   private async userId(req: Request) {
     const cookie = req.cookies?.access_token;
     if (!cookie) return undefined;
     try {
-      return (
-        await this.jwt.verifyAsync<AccessPayload>(cookie, {
-          secret: process.env.JWT_ACCESS_SECRET!,
-        })
-      ).sub;
+      const payload = await this.jwt.verifyAsync<AccessPayload>(cookie, {
+        secret: process.env.JWT_ACCESS_SECRET!,
+      });
+      if (payload.sessionId) {
+        const session = await this.prisma.refreshSession.findUnique({
+          where: { id: payload.sessionId },
+          select: { revokedAt: true, expiresAt: true },
+        });
+        if (!session || session.revokedAt || session.expiresAt < new Date()) {
+          return undefined;
+        }
+      }
+      const user = await this.prisma.user.findUnique({
+        where: { id: payload.sub },
+        select: { id: true, isActive: true },
+      });
+      return user?.isActive ? user.id : undefined;
     } catch {
       return undefined;
     }
@@ -300,20 +327,19 @@ export class PublicContentController {
         file.mime === "application/pdf" || file.mime.startsWith("image/")
           ? "inline"
           : `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      )
-      .send(file.buffer);
-  }
-  @Post("exams/:id/submit") async submit(
-    @Param("id") id: string,
-    @Body("answers") answers: Record<string, string>,
-    @Req() req: Request,
-  ) {
-    return this.service.submit(id, answers, await this.userId(req));
+      );
+    file.stream.pipe(res);
   }
   @Post("exams/:id/attempts/start") startAttempt(
     @Param("id") id: string,
     @Body()
-    body: { participantName?: string; attemptId?: string; guestToken?: string },
+    body: {
+      participantName?: string;
+      attemptId?: string;
+      guestToken?: string;
+      forceNew?: boolean;
+      preferNew?: boolean;
+    },
     @Req() req: Request,
   ) {
     return this.userId(req).then((userId) =>
@@ -371,20 +397,22 @@ export class PublicContentController {
       .setHeader(
         "Content-Disposition",
         `attachment; filename*=UTF-8''${encodeURIComponent(file.name)}`,
-      )
-      .send(file.buffer);
+      );
+    file.stream.pipe(res);
   }
   @Get("materials/:id/preview") async materialPreview(
     @Param("id") id: string,
     @Res() res: Response,
   ) {
     const file = await this.service.materialFile(id);
-    if (file.mime !== "application/pdf")
+    if (file.mime !== "application/pdf") {
+      file.stream.destroy();
       throw new BadRequestException("Chỉ xem trước PDF.");
+    }
     res
       .type("application/pdf")
-      .setHeader("Content-Disposition", "inline")
-      .send(file.buffer);
+      .setHeader("Content-Disposition", "inline");
+    file.stream.pipe(res);
   }
   @Post("teacher-applications") async apply(
     @Body()

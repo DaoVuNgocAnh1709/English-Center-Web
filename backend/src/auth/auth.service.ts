@@ -30,12 +30,46 @@ export class AuthService {
     return this.createSession(session.user.id, session.user.email, session.user.role);
   }
 
-  async logout(rawToken: string | undefined) {
-    if (!rawToken) return;
+  async logout(rawToken: string | undefined, accessToken?: string) {
+    if (rawToken) {
+      try {
+        const payload = await this.jwt.verifyAsync<RefreshPayload>(rawToken, { secret: process.env.JWT_REFRESH_SECRET!, ignoreExpiration: true });
+        await this.prisma.refreshSession.updateMany({ where: { id: payload.sessionId, revokedAt: null }, data: { revokedAt: new Date() } });
+      } catch {
+        // ignore invalid refresh token
+      }
+    }
+    if (accessToken) {
+      try {
+        const payload = await this.jwt.verifyAsync<AccessPayload>(accessToken, { secret: process.env.JWT_ACCESS_SECRET!, ignoreExpiration: true });
+        if (payload.sessionId) {
+          await this.prisma.refreshSession.updateMany({ where: { id: payload.sessionId, revokedAt: null }, data: { revokedAt: new Date() } });
+        }
+      } catch {
+        // ignore invalid access token
+      }
+    }
+  }
+
+  async session(accessToken?: string) {
+    if (!accessToken) return { authenticated: false, user: null };
     try {
-      const payload = await this.jwt.verifyAsync<RefreshPayload>(rawToken, { secret: process.env.JWT_REFRESH_SECRET!, ignoreExpiration: true });
-      await this.prisma.refreshSession.updateMany({ where: { id: payload.sessionId, revokedAt: null }, data: { revokedAt: new Date() } });
-    } catch { return; }
+      const payload = await this.jwt.verifyAsync<AccessPayload>(accessToken, { secret: process.env.JWT_ACCESS_SECRET! });
+      if (payload.sessionId) {
+        const activeSession = await this.prisma.refreshSession.findUnique({
+          where: { id: payload.sessionId },
+          select: { revokedAt: true, expiresAt: true },
+        });
+        if (!activeSession || activeSession.revokedAt || activeSession.expiresAt < new Date()) {
+          return { authenticated: false, user: null };
+        }
+      }
+      const user = await this.prisma.user.findUnique({ where: { id: payload.sub }, select: { id: true, email: true, fullName: true, role: true, isActive: true } });
+      if (!user || !user.isActive) return { authenticated: false, user: null };
+      return { authenticated: true, user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role } };
+    } catch {
+      return { authenticated: false, user: null };
+    }
   }
 
   private async createSession(userId: string, email: string, role: AccessPayload["role"]) {

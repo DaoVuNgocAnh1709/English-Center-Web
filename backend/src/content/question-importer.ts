@@ -184,7 +184,46 @@ async function parseWorkbook(buffer: Buffer) {
       points: Number.isFinite(parsedPoints) && parsedPoints > 0 && parsedPoints <= 100 ? parsedPoints : 1,
     });
   });
-  return questions.slice(0, 200);
+  return questions.slice(0, 500);
+}
+
+function decodeHtmlEntities(value: string) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'");
+}
+
+export async function extractDocxFormattedText(buffer: Buffer): Promise<{
+  text: string;
+  messages: string[];
+}> {
+  const htmlResult = await mammoth
+    .convertToHtml({ buffer }, { styleMap: ["u => u"] })
+    .catch(() => null);
+  if (htmlResult?.value?.trim()) {
+    const converted = decodeHtmlEntities(
+      htmlResult.value
+        .replace(/<u>\s*([^<]+?)\s*<\/u>/gi, "__$1__")
+        .replace(/<\/(?:td|th)>\s*<(?:td|th)[^>]*>/gi, " <COL> ")
+        .replace(/<(?:br|\/p|\/div|\/tr|\/li|\/h[1-6])\b[^>]*>/gi, "\n")
+        .replace(/<[^>]+>/g, ""),
+    );
+    if (converted.trim()) {
+      return {
+        text: converted,
+        messages: htmlResult.messages.map((item) => item.message),
+      };
+    }
+  }
+  const rawResult = await mammoth.extractRawText({ buffer });
+  return {
+    text: rawResult.value,
+    messages: rawResult.messages.map((item) => item.message),
+  };
 }
 
 export async function inspectExamSource(file: Upload): Promise<ImportedSource> {
@@ -204,11 +243,11 @@ export async function inspectExamSource(file: Upload): Promise<ImportedSource> {
   }
   if (zip && name.endsWith(".docx")) {
     await inspectArchive(file.buffer);
-    const result = await mammoth.extractRawText({ buffer: file.buffer });
-    if (Buffer.byteLength(result.value, "utf8") > 2 * 1024 * 1024)
+    const result = await extractDocxFormattedText(file.buffer);
+    if (Buffer.byteLength(result.text, "utf8") > 2 * 1024 * 1024)
       throw new BadRequestException("Nội dung Word sau giải nén vượt 2 MB.");
-    const parsed = parseQuestionTextLayout(result.value);
-    const warnings = [...parsed.warnings, ...result.messages.map((item) => item.message)];
+    const parsed = parseQuestionTextLayout(result.text);
+    const warnings = [...parsed.warnings, ...result.messages];
     return { extension: "docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", pageCount: 1, questions: parsed.questions, warnings: parsed.questions.length ? warnings : ["Không nhận diện được câu hỏi trong DOCX; hãy kiểm tra cách đánh số câu."] };
   }
   if (zip && name.endsWith(".xlsx")) {

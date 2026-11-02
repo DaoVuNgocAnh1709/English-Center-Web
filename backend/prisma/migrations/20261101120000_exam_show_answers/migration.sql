@@ -1,0 +1,2 @@
+ALTER TABLE "Exam"
+ADD COLUMN "showAnswers" BOOLEAN NOT NULL DEFAULT true;

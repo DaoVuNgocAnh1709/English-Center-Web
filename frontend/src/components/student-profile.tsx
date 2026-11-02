@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BookOpen, CheckCircle2, FileText, GraduationCap, Loader2, Mail, PlayCircle, ShieldCheck, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
+import { apiFetch } from "@/lib/api-client";
+import { safeExternalUrl } from "@/lib/safe-url";
 
 type Overview = {
   user: { fullName: string; email: string; role: "ADMIN" | "TEACHER" | "STUDENT" };
@@ -29,7 +31,7 @@ export function StudentProfile() {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    fetch(`${api}/portal/overview`, { credentials: "include" })
+    apiFetch(`${api}/portal/overview`)
       .then(async (response) => {
         if (response.status === 401) {
           router.replace("/dang-nhap?returnTo=/hoc-vien");
@@ -83,7 +85,7 @@ export function StudentProfile() {
             {data.enrollments?.map((item) => <article key={item.id} className="rounded-2xl border border-slate-200 p-5 transition hover:border-[#123d68]/25 hover:shadow-[0_12px_35px_rgba(9,43,76,.07)]">
               <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-extrabold text-[#092b4c]">{item.course.title}</h3><p className="mt-1 text-xs text-slate-500">Độ tuổi: {item.course.ageRange}</p></div><strong className="rounded-full bg-[#fff0f1] px-3 py-1 text-sm text-[#d91f2a]">{item.progress}%</strong></div>
               <div className="mt-4 h-2 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-[#d91f2a] transition-[width]" style={{ width: `${item.progress}%` }}/></div>
-              <div className="mt-5 grid gap-2">{item.course.lessons.slice(0, 3).map((lesson, index) => <div key={lesson.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"><span className="flex items-center gap-2 text-xs font-bold text-slate-700"><CheckCircle2 size={15} className="text-slate-400"/>{index + 1}. {lesson.title}</span>{lesson.driveUrl || lesson.youtubeUrl ? <a href={lesson.driveUrl || lesson.youtubeUrl} target="_blank" rel="noreferrer" className="shrink-0 text-xs font-extrabold text-[#d91f2a]">Mở bài</a> : <span className="shrink-0 text-[11px] text-slate-400">Chờ học liệu</span>}</div>)}</div>
+              <div className="mt-5 grid gap-2">{item.course.lessons.map((lesson, index) => { const lessonUrl = safeExternalUrl(lesson.driveUrl) || safeExternalUrl(lesson.youtubeUrl); return <div key={lesson.id} className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-4 py-3"><span className="flex items-center gap-2 text-xs font-bold text-slate-700"><CheckCircle2 size={15} className="text-slate-400"/>{index + 1}. {lesson.title}</span>{lessonUrl ? <a href={lessonUrl} target="_blank" rel="noopener noreferrer" className="shrink-0 text-xs font-extrabold text-[#d91f2a]">Mở bài</a> : <span className="shrink-0 text-[11px] text-slate-400">Chờ học liệu</span>}</div>; })}</div>
               <Link href={`/khoa-hoc/${item.course.slug}`} className="mt-5 inline-flex text-xs font-extrabold text-[#123d68]">Xem chi tiết chương trình →</Link>
             </article>)}
             {!data.enrollments?.length && <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center"><BookOpen className="mx-auto text-slate-300" size={34}/><p className="mt-3 text-sm text-slate-500">Bạn chưa được ghi danh vào khóa học nào.</p><Link href="/lien-he" className="mt-4 inline-flex text-sm font-extrabold text-[#d91f2a]">Liên hệ trung tâm →</Link></div>}

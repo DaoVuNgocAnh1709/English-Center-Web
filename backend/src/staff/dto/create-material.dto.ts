@@ -7,8 +7,8 @@ export class CreateMaterialDto {
   @IsString() @MaxLength(80) category!: string;
   @IsOptional() @IsString() @MaxLength(80) level?: string;
   @IsEnum(MaterialType) type!: MaterialType;
-  @IsOptional() @IsUrl({ require_tld: true }) driveUrl?: string;
-  @IsOptional() @IsUrl({ require_tld: true }) youtubeUrl?: string;
+  @IsOptional() @IsUrl({ protocols: ["http", "https"], require_protocol: true, require_tld: true }) driveUrl?: string;
+  @IsOptional() @IsUrl({ protocols: ["http", "https"], require_protocol: true, require_tld: true }) youtubeUrl?: string;
   @IsOptional() @IsBoolean() isPublic?: boolean;
   @IsOptional() @IsInt() @Min(0) sortOrder?: number;
 }

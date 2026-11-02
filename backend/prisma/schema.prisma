@@ -259,6 +259,7 @@ model Exam {
   schoolLevel        SchoolLevel
   grade              Int
   durationMinutes    Int                @default(45)
+  showAnswers        Boolean            @default(true)
   status             ContentStatus      @default(DRAFT)
   access             ExamAccess         @default(PUBLIC)
   sourceId           String

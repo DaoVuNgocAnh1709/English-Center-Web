@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BookOpenCheck, ChevronDown, LogIn, LogOut, Menu, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { apiFetch } from "@/lib/api-client";
 
 const links = [
   ["Về trung tâm", "/gioi-thieu"], ["Khóa học", "/khoa-hoc"],
@@ -23,6 +24,16 @@ export function Header() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [navState, setNavState] = useState<{ from: string; to: string } | null>(null);
+  const isNavigating = navState !== null && navState.from === pathname && navState.to !== pathname;
+
+  const trackNavigation = (event: React.MouseEvent<HTMLAnchorElement>, href: string) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (pathname !== href) setNavState({ from: pathname, to: href });
+  };
+
+  const lastFetchedAuthState = useRef<boolean>(false);
+  const prevPathname = useRef<string>(pathname);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 10);
@@ -30,14 +41,22 @@ export function Header() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
   useEffect(() => {
+    const cameFromAuthPage =
+      prevPathname.current.startsWith("/dang-nhap") ||
+      prevPathname.current.startsWith("/quen-mat-khau");
+    prevPathname.current = pathname;
+    if (lastFetchedAuthState.current && !cameFromAuthPage) return;
+
     let active = true;
-    fetch(`${api}/portal/overview`, { credentials: "include" })
+    lastFetchedAuthState.current = true;
+    apiFetch(`${api}/auth/session`)
       .then(async (response) => {
         if (!active) return;
-        setOpen(false); setAccountOpen(false);
+        setOpen(false);
+        setAccountOpen(false);
         if (!response.ok) return setUser(null);
-        const data = (await response.json()) as { user: CurrentUser };
-        setUser(data.user);
+        const data = (await response.json()) as { authenticated: boolean; user: CurrentUser | null };
+        setUser(data.authenticated ? data.user : null);
       }).catch(() => active && setUser(null));
     return () => { active = false; };
   }, [pathname]);
@@ -49,17 +68,32 @@ export function Header() {
   }, []);
   async function logout() {
     await fetch(`${api}/auth/logout`, { method: "POST", credentials: "include" });
+    try {
+      for (const storage of [window.localStorage, window.sessionStorage]) {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < storage.length; i += 1) {
+          const key = storage.key(i);
+          if (key?.startsWith("brightpath-attempt-")) keysToRemove.push(key);
+        }
+        keysToRemove.forEach((key) => storage.removeItem(key));
+      }
+    } catch {}
     setUser(null); setAccountOpen(false); router.push("/"); router.refresh();
   }
 
   return <header className={`sticky top-0 z-50 bg-white transition-shadow duration-300 ${scrolled ? "shadow-[0_8px_30px_rgba(15,23,42,.09)]" : "border-b border-slate-100"}`}>
+    {isNavigating && (
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-1 overflow-hidden bg-[#123d68]/10">
+        <div className="h-full w-1/2 animate-pulse rounded-r-full bg-[#d91f2a]" />
+      </div>
+    )}
     <div className="container-shell flex h-[76px] items-center justify-between">
-      <Link href="/" className="flex shrink-0 items-center gap-3" aria-label="Trang chủ Bright Path English">
+      <Link href="/" onClick={(event) => trackNavigation(event, "/")} className="flex shrink-0 items-center gap-3" aria-label="Trang chủ Bright Path English">
         <span className="grid h-11 w-12 place-items-center rounded-xl bg-[#d91f2a] text-base font-black italic tracking-[-.08em] text-white shadow-[0_8px_20px_rgba(217,31,42,.2)]">BP</span>
         <span><strong className="block text-[15px] font-extrabold tracking-[.04em] text-[#123d68]">BRIGHT PATH</strong><small className="block text-[11px] font-bold tracking-[.12em] text-slate-500">ENGLISH CENTER</small></span>
       </Link>
       <nav className="hidden items-center gap-6 xl:flex" aria-label="Điều hướng chính">
-        {links.map(([label, href]) => { const active = pathname === href || pathname.startsWith(`${href}/`); return <Link key={label} href={href} aria-current={active ? "page" : undefined} className={`group relative py-7 text-[13px] font-bold transition-colors ${active ? "text-[#d91f2a]" : "text-slate-700 hover:text-[#d91f2a]"}`}>{label}<span className={`absolute inset-x-0 bottom-4 h-0.5 origin-left bg-[#d91f2a] transition-transform duration-300 ${active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100"}`}/></Link>; })}
+        {links.map(([label, href]) => { const active = pathname === href || pathname.startsWith(`${href}/`) || (isNavigating && navState?.to === href); return <Link key={label} href={href} onClick={(event) => trackNavigation(event, href)} aria-current={active ? "page" : undefined} className={`group relative py-7 text-[13px] font-bold transition-colors ${active ? "text-[#d91f2a]" : "text-slate-700 hover:text-[#d91f2a]"}`}>{label}<span className={`absolute inset-x-0 bottom-4 h-0.5 origin-left bg-[#d91f2a] transition-transform duration-300 ${active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100"}`}/></Link>; })}
       </nav>
       <div className="hidden items-center gap-3 xl:flex">
         <Link href="/lien-he" className="btn-primary min-h-11 px-5">Đăng ký học thử</Link>
@@ -71,8 +105,8 @@ export function Header() {
           {accountOpen && <div className="absolute right-0 top-[calc(100%+12px)] w-72 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_55px_rgba(9,43,76,.18)]">
             <div className="border-b border-slate-100 px-5 py-4"><p className="truncate text-sm font-extrabold text-[#092b4c]">{user.fullName}</p><p className="mt-1 truncate text-xs text-slate-500">{user.email}</p></div>
             <div className="p-2">
-              <Link href={accountPath(user.role)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><UserRound size={18}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
-              {user.role === "STUDENT" && <Link href="/hoc-vien#lich-su" className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><BookOpenCheck size={18}/>Lịch sử luyện đề</Link>}
+              <Link href={accountPath(user.role)} onClick={() => setAccountOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><UserRound size={18}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
+              {user.role === "STUDENT" && <Link href="/hoc-vien#lich-su" onClick={() => setAccountOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><BookOpenCheck size={18}/>Lịch sử luyện đề</Link>}
               <button type="button" onClick={logout} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-red-600 transition hover:bg-red-50"><LogOut size={18}/>Đăng xuất</button>
             </div>
           </div>}

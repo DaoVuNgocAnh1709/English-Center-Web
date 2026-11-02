@@ -264,7 +264,7 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
       position: questions.length + 1,
       sourceLabel: pending.label,
       section: pending.section,
-      content: content.slice(0, 4000),
+      content: content.slice(0, 8000),
       options: options.slice(0, 8).map((option) => option.slice(0, 1000)),
       kind:
         options.length >= 2
@@ -311,12 +311,18 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
     const match = matchQuestion(line.text);
     if (match) {
       flush();
-      const context = pendingContext.join(" ").slice(0, 1800);
+      const context = pendingContext.join(" ").slice(0, 8000);
+      if (context) {
+        currentSection =
+          currentSection && !context.startsWith(currentSection)
+            ? `${currentSection}\n${context}`
+            : context;
+      }
       pending = {
         label: match.label,
         explicitMarker: Boolean(match.marker),
         text: clean(match.content),
-        section: context || currentSection,
+        section: currentSection,
         lines: [line],
       };
       pendingContext = [];
@@ -325,7 +331,7 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
     if (pending) {
       pending.text = clean(`${pending.text} ${line.text}`);
       pending.lines.push(line);
-    } else if (line.text.length > 20 && pendingContext.join(" ").length < 1800) {
+    } else if (line.text.length > 20 && pendingContext.join(" ").length < 8000) {
       pendingContext.push(line.text);
     }
   }

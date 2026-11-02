@@ -35,13 +35,19 @@ export class AuthController {
   @Post("logout")
   @HttpCode(204)
   async logout(@Req() request: Request, @Res({ passthrough: true }) response: Response) {
-    await this.auth.logout(request.cookies?.refresh_token);
-    response.clearCookie("access_token", { path: "/" });
-    response.clearCookie("refresh_token", { path: "/api/auth" });
+    await this.auth.logout(request.cookies?.refresh_token, request.cookies?.access_token);
+    const secure = process.env.NODE_ENV === "production";
+    response.clearCookie("access_token", { httpOnly: true, secure, sameSite: "lax", path: "/" });
+    response.clearCookie("refresh_token", { httpOnly: true, secure, sameSite: "lax", path: "/api/auth" });
   }
 
   @Get("me")
   @UseGuards(JwtAuthGuard)
   me(@CurrentUser() user: AccessPayload) { return user; }
+
+  @Get("session")
+  async session(@Req() request: Request) {
+    return this.auth.session(request.cookies?.access_token);
+  }
 }
 

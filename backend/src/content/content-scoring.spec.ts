@@ -1,5 +1,5 @@
 import { QuestionKind, QuestionTaskType } from "@prisma/client";
-import { normalizedScoringAnswer } from "./content.service";
+import { isScoringAnswerMatch, normalizedScoringAnswer } from "./content.service";
 
 describe("interactive question scoring", () => {
   it("normalizes matching answers independently of object key insertion order", () => {
@@ -28,5 +28,24 @@ describe("interactive question scoring", () => {
       QuestionTaskType.ORDERING,
     );
     expect(correct).not.toBe(wrong);
+  });
+
+  it("matches English contractions, trailing punctuation, and multiple variants for short text", () => {
+    expect(
+      isScoringAnswerMatch(
+        "She doesn't like coffee.",
+        "She does not like coffee",
+        QuestionKind.SHORT_TEXT,
+        QuestionTaskType.SENTENCE_REWRITE,
+      ),
+    ).toBe(true);
+    expect(
+      isScoringAnswerMatch(
+        "due to the heavy rain",
+        "because of the heavy rain / due to the heavy rain",
+        QuestionKind.SHORT_TEXT,
+        QuestionTaskType.SENTENCE_REWRITE,
+      ),
+    ).toBe(true);
   });
 });

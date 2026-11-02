@@ -101,6 +101,7 @@ Quy tắc bắt buộc:
 - Dạng dùng từ gợi ý để viết một câu hoàn chỉnh là SHORT_TEXT, không phải ESSAY.
 - taskType phải phân loại ý nghĩa bài tập: PRONUNCIATION, STRESS, VOCABULARY, SYNONYM, ANTONYM, PHRASAL_VERB, GRAMMAR, GAP_FILL, FUNCTIONAL_COMMUNICATION, PASSIVE_VOICE, REPORTED_SPEECH, CONDITIONAL_SENTENCE, RELATIVE_CLAUSE, TAG_QUESTION, WORD_FORM, VERB_FORM, CLOZE, READING_COMPREHENSION, MULTIPLE_SELECT, TRUE_FALSE, MATCHING, ORDERING, ERROR_CORRECTION, SENTENCE_COMBINATION, SENTENCE_REWRITE, SENTENCE_BUILDING, TRANSLATION, LISTENING, DICTATION, WRITING, GENERAL hoặc OTHER.
 - Chỉ điền answer khi đáp án được ghi rõ trong chính PDF; tuyệt đối không tự giải đề. Nếu không có đáp án, trả chuỗi rỗng.
+- Nếu trong câu hỏi hoặc lựa chọn A–D có chữ/âm tiết được gạch chân (đặc biệt ở dạng PRONUNCIATION phát âm hoặc ERROR_CORRECTION tìm lỗi sai), bắt buộc giữ nguyên bằng cách bọc đúng phần gạch chân trong cặp dấu gạch dưới kép __như thế này__ (ví dụ: "A. l__a__yer", "B. fr__a__me", "She __go__ to school"). Tuyệt đối không dùng __ cho chỗ trống điền từ (chỗ trống điền từ dùng "_____").
 - sourcePage là số trang trong PDF được gửi, bắt đầu từ 1.
 - sourceLabel giữ số hoặc nhãn câu trong tài liệu. Nếu không có nhãn rõ ràng, dùng thứ tự câu.
 - confidence phản ánh độ chắc chắn rằng câu và các lựa chọn đã được tách đúng.
@@ -166,6 +167,47 @@ export class GeminiImportService {
   private blockedUntil = 0;
   private blockedReason = "";
 
+  async extractText(
+    documentText: string,
+    options: { model?: string } = {},
+  ): Promise<GeminiImportResult> {
+    const enabled = process.env.AI_IMPORT_ENABLED === "true";
+    const apiKey = process.env.GEMINI_API_KEY?.trim();
+    const model =
+      options.model?.trim() ||
+      process.env.GEMINI_MODEL?.trim() ||
+      "gemini-3.5-flash-lite";
+    if (!enabled || !apiKey)
+      return {
+        status: "DISABLED",
+        model: null,
+        reason: !enabled
+          ? "Nhận diện Gemini đang tắt."
+          : "Chưa cấu hình GEMINI_API_KEY.",
+      };
+    if (Date.now() < this.blockedUntil)
+      return {
+        status: "QUOTA",
+        model,
+        reason:
+          this.blockedReason ||
+          "Gemini đang tạm nghỉ sau khi chạm giới hạn; hệ thống chuyển sang nhận diện nội bộ.",
+      };
+    if (!documentText.trim())
+      return {
+        status: "INVALID",
+        model,
+        reason: "Tệp không có nội dung văn bản để nhận diện.",
+      };
+    return this.requestGemini(
+      model,
+      apiKey,
+      [
+        { text: `${prompt}\n\nNội dung tài liệu đề thi:\n${documentText.slice(0, 120_000)}` },
+      ],
+    );
+  }
+
   async extractPdf(
     buffer: Buffer,
     options: { model?: string } = {},
@@ -204,6 +246,26 @@ export class GeminiImportService {
         reason: "PDF vượt giới hạn gửi trực tiếp tới Gemini; hệ thống chuyển sang nhận diện nội bộ.",
       };
 
+    return this.requestGemini(
+      model,
+      apiKey,
+      [
+        {
+          inlineData: {
+            mimeType: "application/pdf",
+            data: buffer.toString("base64"),
+          },
+        },
+        { text: prompt },
+      ],
+    );
+  }
+
+  private async requestGemini(
+    model: string,
+    apiKey: string,
+    parts: Array<Record<string, unknown>>,
+  ): Promise<GeminiImportResult> {
     const timeoutMs = Math.max(
       10_000,
       numberValue(process.env.AI_IMPORT_TIMEOUT_MS) || 120_000,
@@ -221,15 +283,7 @@ export class GeminiImportService {
           contents: [
             {
               role: "user",
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: "application/pdf",
-                    data: buffer.toString("base64"),
-                  },
-                },
-                { text: prompt },
-              ],
+              parts,
             },
           ],
           generationConfig: {
@@ -273,8 +327,8 @@ export class GeminiImportService {
 
       const candidates = payload?.candidates as Array<Record<string, unknown>> | undefined;
       const content = candidates?.[0]?.content as Record<string, unknown> | undefined;
-      const parts = content?.parts as Array<Record<string, unknown>> | undefined;
-      const raw = parts?.map((part) => String(part.text ?? "")).join("").trim();
+      const responseParts = content?.parts as Array<Record<string, unknown>> | undefined;
+      const raw = responseParts?.map((part) => String(part.text ?? "")).join("").trim();
       if (!raw)
         return {
           status: "INVALID",
@@ -285,15 +339,15 @@ export class GeminiImportService {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       const rows = Array.isArray(parsed.questions) ? parsed.questions : [];
       const questions: ImportedQuestion[] = rows
-        .slice(0, 200)
+        .slice(0, 500)
         .flatMap((value, index) => {
           if (!value || typeof value !== "object") return [];
           const row = value as Record<string, unknown>;
-          const contentText = textValue(row.content, 4_000);
+          const contentText = textValue(row.content, 8_000);
           if (!contentText) return [];
           const sectionText = row.section == null
             ? ""
-            : textValue(row.section, 1_000);
+            : textValue(row.section, 8_000);
           const options = Array.isArray(row.options)
             ? row.options.map((item) => textValue(item, 1_000)).filter(Boolean).slice(0, 8)
             : [];

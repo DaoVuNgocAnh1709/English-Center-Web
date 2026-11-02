@@ -27,6 +27,7 @@ const api = process.env.NEXT_PUBLIC_API_URL || "/api";
 
 export default function LibraryPage() {
   const [items, setItems] = useState<Material[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [level, setLevel] = useState("");
   const [grade, setGrade] = useState("");
@@ -35,12 +36,18 @@ export default function LibraryPage() {
   const [error, setError] = useState("");
 
   useEffect(() => {
+    let active = true;
     fetch(`${api}/public-content/materials`)
       .then(async (response) => {
         if (!response.ok) throw new Error();
-        setItems(await response.json());
+        const data = (await response.json()) as Material[];
+        if (active) setItems(data);
       })
-      .catch(() => setError("Chưa tải được thư viện tài liệu."));
+      .catch(() => active && setError("Chưa tải được thư viện tài liệu."))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
   }, []);
 
   const categoryChoices = useMemo(
@@ -160,8 +167,8 @@ export default function LibraryPage() {
           <div className="min-w-0">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
               <div>
-                <h2 className="text-2xl font-extrabold text-[#092b4c]">
-                  {filtered.length} tài liệu phù hợp
+                <h2 className="text-2xl font-extrabold text-[#092b4c] tabular-nums">
+                  {loading ? "Đang tải tài liệu..." : `${filtered.length} tài liệu phù hợp`}
                 </h2>
               </div>
               {activeFilters > 0 && (
@@ -175,35 +182,55 @@ export default function LibraryPage() {
                 {error}
               </p>
             )}
-            <div className="grid gap-5 xl:grid-cols-2">
-              {filtered.map((item) => (
-                <article key={item.id} className="soft-card flex flex-col p-6">
-                  <div className="flex flex-wrap gap-2 text-[11px] font-extrabold uppercase tracking-wider">
-                    <span className="rounded-full bg-red-50 px-3 py-1 text-[#d91f2a]">
-                      {item.category}
-                    </span>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">
-                      {item.grade !== null
-                        ? gradeLabel(item.grade)
-                        : typeLabel(item.type)}
-                    </span>
-                  </div>
-                  <h3 className="mt-4 text-xl font-extrabold text-[#092b4c]">
-                    {item.title}
-                  </h3>
-                  <p className="mt-3 flex-1 text-sm leading-7 text-slate-600">
-                    {item.summary}
-                  </p>
-                  <Link
-                    className="btn-outline mt-5"
-                    href={`/thu-vien/${item.slug}`}
+            {loading ? (
+              <div className="grid gap-5 xl:grid-cols-2" aria-busy="true">
+                {[1, 2, 3, 4].map((skeleton) => (
+                  <div
+                    key={skeleton}
+                    className="soft-card flex flex-col animate-pulse p-6"
                   >
-                    Xem tài liệu →
-                  </Link>
-                </article>
-              ))}
-            </div>
-            {!filtered.length && !error && (
+                    <div className="flex gap-2">
+                      <div className="h-6 w-20 rounded-full bg-slate-200" />
+                      <div className="h-6 w-16 rounded-full bg-slate-100" />
+                    </div>
+                    <div className="mt-4 h-6 w-3/4 rounded bg-slate-200" />
+                    <div className="mt-3 h-4 w-full rounded bg-slate-100" />
+                    <div className="mt-2 h-4 w-2/3 rounded bg-slate-100" />
+                    <div className="mt-6 h-11 w-full rounded-[10px] bg-slate-100" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="grid gap-5 xl:grid-cols-2">
+                {filtered.map((item) => (
+                  <article key={item.id} className="soft-card flex flex-col p-6">
+                    <div className="flex flex-wrap gap-2 text-[11px] font-extrabold uppercase tracking-wider">
+                      <span className="rounded-full bg-red-50 px-3 py-1 text-[#d91f2a]">
+                        {item.category}
+                      </span>
+                      <span className="rounded-full bg-slate-100 px-3 py-1 text-slate-700">
+                        {item.grade !== null
+                          ? gradeLabel(item.grade)
+                          : typeLabel(item.type)}
+                      </span>
+                    </div>
+                    <h3 className="mt-4 text-xl font-extrabold text-[#092b4c]">
+                      {item.title}
+                    </h3>
+                    <p className="mt-3 flex-1 text-sm leading-7 text-slate-600">
+                      {item.summary}
+                    </p>
+                    <Link
+                      className="btn-outline mt-5"
+                      href={`/thu-vien/${item.slug}`}
+                    >
+                      Xem tài liệu →
+                    </Link>
+                  </article>
+                ))}
+              </div>
+            )}
+            {!loading && !filtered.length && !error && (
               <div className="soft-card p-10 text-center">
                 <h3 className="font-extrabold text-[#092b4c]">
                   Không có tài liệu phù hợp

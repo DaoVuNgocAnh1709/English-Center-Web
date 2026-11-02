@@ -1,15 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   Clock3,
   Eye,
-  ExternalLink,
   FileText,
+  Flag,
   GripVertical,
   ChevronUp,
   ChevronDown,
@@ -21,6 +22,13 @@ import {
 } from "lucide-react";
 import { gradeLabel } from "@/lib/content-options";
 import { Modal } from "@/components/modal";
+import { apiFetch } from "@/lib/api-client";
+import {
+  cleanQuestionPrompt,
+  enrichPronunciationOptions,
+  renderFormattedText,
+  stripFormattedText,
+} from "@/lib/formatted-text";
 
 type Question = {
   position: number;
@@ -40,6 +48,7 @@ type Exam = {
   summary: string;
   grade: number;
   durationMinutes: number;
+  showAnswers?: boolean;
   questions: Question[];
   source?: { fileName: string; mimeType: string };
 };
@@ -50,6 +59,7 @@ type Result = {
   manualPossible: number;
   pending: number;
   provisional: boolean;
+  showAnswers?: boolean;
   details: {
     position: number;
     status: string;
@@ -62,10 +72,14 @@ type Attempt = {
   guestToken?: string;
   participantName: string | null;
   status: "DRAFT" | "SUBMITTED" | "GRADED";
+  startedAt?: string;
 };
 type StartResponse = Attempt & {
   answers: Record<string, string>;
+  startedAt?: string;
   savedAt: string;
+  remainingSeconds?: number;
+  autoSubmittedExpired?: boolean;
   teacherFeedback?: string | null;
   result?: Result | null;
 };
@@ -89,100 +103,272 @@ const taskTypeLabels: Record<string, string> = {
 
 export default function ExamPage() {
   const params = useParams<{ slug: string }>();
+  const router = useRouter();
   const [exam, setExam] = useState<Exam | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [flaggedPositions, setFlaggedPositions] = useState<number[]>([]);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [guestName, setGuestName] = useState("");
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">(
-    "idle",
-  );
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [teacherFeedback, setTeacherFeedback] = useState("");
+  const [autoSubmittedNotice, setAutoSubmittedNotice] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  const [pendingExitUrl, setPendingExitUrl] = useState<string | null>(null);
+  const [deadlineMs, setDeadlineMs] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+
+  const lastSavedJsonRef = useRef<string>("{}");
+  const autoSubmittingRef = useRef<boolean>(false);
+  const allowExitRef = useRef<boolean>(false);
+  const startIntentRef = useRef<{ attemptId: string; fresh: boolean } | null>(null);
+
+  const isExamActive = Boolean(exam && attempt && !result && attempt.status === "DRAFT");
+
+  const applyStartResponse = useCallback(
+    (
+      data: StartResponse,
+      currentExam: Exam,
+      fallbackGuestToken?: string,
+    ) => {
+      const resolvedToken = data.guestToken || fallbackGuestToken;
+      const initialAnswers = data.answers || {};
+      lastSavedJsonRef.current = JSON.stringify(initialAnswers);
+      autoSubmittingRef.current = false;
+      setAttempt({
+        attemptId: data.attemptId,
+        guestToken: resolvedToken,
+        participantName: data.participantName,
+        status: data.status,
+        startedAt: data.startedAt,
+      });
+      setAnswers(initialAnswers);
+      setResult(data.result || null);
+      setTeacherFeedback(data.teacherFeedback || "");
+      if (data.autoSubmittedExpired) {
+        setAutoSubmittedNotice(
+          "Phiên làm bài trước đã hết thời gian quy định nên hệ thống đã tự động ghi nhận kết quả. Bạn có thể bấm “Làm lại đề” để bắt đầu lượt làm mới với đầy đủ thời gian.",
+        );
+      } else {
+        setAutoSubmittedNotice("");
+      }
+      if (data.status === "DRAFT" && !data.result) {
+        const remaining =
+          typeof data.remainingSeconds === "number" && data.remainingSeconds > 0
+            ? data.remainingSeconds
+            : Math.max(1, currentExam.durationMinutes || 45) * 60;
+        const now = Date.now();
+        setNowMs(now);
+        setDeadlineMs(now + remaining * 1000);
+      } else {
+        setDeadlineMs(null);
+      }
+      const storageKey = `brightpath-attempt-${currentExam.id}`;
+      if (!authenticated && data.status === "DRAFT" && resolvedToken) {
+        const payload = JSON.stringify({
+          attemptId: data.attemptId,
+          guestToken: resolvedToken,
+          participantName: data.participantName,
+        });
+        window.localStorage.setItem(storageKey, payload);
+        window.sessionStorage.setItem(storageKey, payload);
+      } else {
+        window.localStorage.removeItem(storageKey);
+        window.sessionStorage.removeItem(storageKey);
+      }
+    },
+    [authenticated],
+  );
 
   useEffect(() => {
-    fetch(`${api}/public-content/exams/${encodeURIComponent(params.slug)}`)
+    apiFetch(`${api}/public-content/exams/${encodeURIComponent(params.slug)}`)
       .then(async (response) => {
         if (!response.ok) throw new Error();
         setExam(await response.json());
       })
       .catch(() => setError("Không tìm thấy đề hoặc đề chưa được xuất bản."));
-    fetch(`${api}/auth/me`, { credentials: "include" })
-      .then((response) => setAuthenticated(response.ok))
+    apiFetch(`${api}/auth/session`)
+      .then(async (response) => {
+        if (!response.ok) return setAuthenticated(false);
+        const data = (await response.json()) as { authenticated: boolean };
+        setAuthenticated(!!data.authenticated);
+      })
       .catch(() => setAuthenticated(false));
   }, [params.slug]);
 
   useEffect(() => {
     if (!exam || authenticated === null || attempt) return;
     const storageKey = `brightpath-attempt-${exam.id}`;
-    const stored = window.localStorage.getItem(storageKey);
+    const query = new URLSearchParams(window.location.search);
+    const requestedAttemptId =
+      query.get("attemptId")?.trim() || startIntentRef.current?.attemptId || "";
+    const wantsFresh = query.get("start") === "1" || !!startIntentRef.current?.fresh;
+    startIntentRef.current = { attemptId: requestedAttemptId, fresh: wantsFresh };
+    if (query.has("attemptId") || query.has("start")) {
+      query.delete("attemptId");
+      query.delete("start");
+      const cleanSearch = query.toString();
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${window.location.pathname}${cleanSearch ? `?${cleanSearch}` : ""}${window.location.hash}`,
+      );
+    }
+    if (wantsFresh && !authenticated) {
+      window.localStorage.removeItem(storageKey);
+      window.sessionStorage.removeItem(storageKey);
+    }
+    const stored =
+      window.localStorage.getItem(storageKey) ||
+      window.sessionStorage.getItem(storageKey);
     let saved: { attemptId?: string; guestToken?: string } = {};
     try {
       saved = stored ? JSON.parse(stored) : {};
     } catch {
       window.localStorage.removeItem(storageKey);
+      window.sessionStorage.removeItem(storageKey);
     }
     if (!authenticated && !saved.attemptId) return;
-    fetch(`${api}/public-content/exams/${exam.id}/attempts/start`, {
+    const requestBody = authenticated
+      ? requestedAttemptId
+        ? { attemptId: requestedAttemptId }
+        : wantsFresh
+          ? { preferNew: true }
+          : {}
+      : saved;
+    apiFetch(`${api}/public-content/exams/${exam.id}/attempts/start`, {
       method: "POST",
-      credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(saved),
+      body: JSON.stringify(requestBody),
     })
       .then(async (response) => {
         if (!response.ok) throw new Error();
         const data = (await response.json()) as StartResponse;
-        setAttempt({
-          attemptId: data.attemptId,
-          guestToken: saved.guestToken,
-          participantName: data.participantName,
-          status: data.status,
-        });
-        setAnswers(data.answers || {});
-        setResult(data.result || null);
-        setTeacherFeedback(data.teacherFeedback || "");
-        window.localStorage.setItem(
-          storageKey,
-          JSON.stringify({
-            attemptId: data.attemptId,
-            guestToken: saved.guestToken,
-          }),
-        );
+        startIntentRef.current = { attemptId: "", fresh: false };
+        applyStartResponse(data, exam, saved.guestToken);
       })
       .catch(() => {
         window.localStorage.removeItem(storageKey);
+        window.sessionStorage.removeItem(storageKey);
         if (authenticated) setError("Chưa thể khởi tạo bài làm.");
       });
-  }, [attempt, authenticated, exam]);
+  }, [applyStartResponse, attempt, authenticated, exam]);
 
   useEffect(() => {
-    if (!exam || !attempt || result || attempt.status !== "DRAFT") return;
-    const timer = window.setTimeout(() => {
+    if (!isExamActive) return;
+    const interval = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [isExamActive]);
+
+  const remainingSeconds =
+    isExamActive && deadlineMs !== null
+      ? Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000))
+      : null;
+
+  const saveDraftNow = useCallback(
+    async (keepalive = false) => {
+      if (!exam || !attempt || result || attempt.status !== "DRAFT") return true;
+      const serialized = JSON.stringify(answers);
+      if (serialized === lastSavedJsonRef.current && saveState === "saved") {
+        return true;
+      }
       setSaveState("saving");
-      fetch(
-        `${api}/public-content/exams/${exam.id}/attempts/${attempt.attemptId}`,
-        {
-          method: "PATCH",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            answers,
-            guestToken: attempt.guestToken,
-          }),
-        },
-      )
-        .then((response) => {
-          if (!response.ok) throw new Error();
-          setSaveState("saved");
-        })
-        .catch(() => setSaveState("idle"));
-    }, 800);
+      try {
+        const response = await apiFetch(
+          `${api}/public-content/exams/${exam.id}/attempts/${attempt.attemptId}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            keepalive,
+            body: JSON.stringify({
+              answers,
+              guestToken: attempt.guestToken,
+            }),
+          },
+        );
+        if (!response.ok) throw new Error();
+        const body = (await response.json().catch(() => null)) as {
+          remainingSeconds?: number;
+        } | null;
+        lastSavedJsonRef.current = serialized;
+        setSaveState("saved");
+        if (body && typeof body.remainingSeconds === "number") {
+          const now = Date.now();
+          setNowMs(now);
+          setDeadlineMs(now + body.remainingSeconds * 1000);
+        }
+        return true;
+      } catch {
+        setSaveState("error");
+        return false;
+      }
+    },
+    [answers, attempt, exam, result, saveState],
+  );
+
+  useEffect(() => {
+    if (!isExamActive) return;
+    if (JSON.stringify(answers) === lastSavedJsonRef.current) return;
+    const timer = window.setTimeout(() => {
+      void saveDraftNow(false);
+    }, 700);
     return () => window.clearTimeout(timer);
-  }, [answers, attempt, exam, result]);
+  }, [answers, isExamActive, saveDraftNow]);
+
+  useEffect(() => {
+    if (!isExamActive) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (allowExitRef.current) return;
+      if (JSON.stringify(answers) !== lastSavedJsonRef.current) {
+        void saveDraftNow(true);
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    const onVisibilityChange = () => {
+      if (
+        document.visibilityState === "hidden" &&
+        JSON.stringify(answers) !== lastSavedJsonRef.current
+      ) {
+        void saveDraftNow(true);
+      }
+    };
+    const onDocumentClickCapture = (event: MouseEvent) => {
+      if (allowExitRef.current || event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const target = (event.target as HTMLElement | null)?.closest("a");
+      if (!target) return;
+      if (target.target === "_blank" || target.hasAttribute("download")) return;
+      const href = target.getAttribute("href");
+      if (!href || href.startsWith("#") || href.startsWith("javascript:")) return;
+      if (href.startsWith("/")) {
+        event.preventDefault();
+        event.stopPropagation();
+        setPendingExitUrl(href);
+      }
+    };
+    window.history.pushState({ examGuard: true }, "", window.location.href);
+    const onPopState = () => {
+      if (allowExitRef.current) return;
+      window.history.pushState({ examGuard: true }, "", window.location.href);
+      setPendingExitUrl("/luyen-de");
+    };
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    document.addEventListener("click", onDocumentClickCapture, true);
+    window.addEventListener("popstate", onPopState);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      document.removeEventListener("click", onDocumentClickCapture, true);
+      window.removeEventListener("popstate", onPopState);
+    };
+  }, [answers, isExamActive, saveDraftNow]);
 
   const answered = useMemo(
     () => Object.values(answers).filter((answer) => answer.trim()).length,
@@ -190,39 +376,71 @@ export default function ExamPage() {
   );
   const webQuestions = !!exam?.questions.some((question) => question.content);
 
-  async function submit() {
-    if (!exam || !attempt) return;
-    setBusy(true);
-    setError("");
-    try {
-      const response = await fetch(
-        `${api}/public-content/exams/${exam.id}/attempts/${attempt.attemptId}/submit`,
-        {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answers, guestToken: attempt.guestToken }),
-        },
-      );
-      if (!response.ok) throw new Error("Không thể nộp bài. Vui lòng thử lại.");
-      const data = (await response.json()) as Result;
-      setResult(data);
-      setAttempt((current) =>
-        current
-          ? {
-              ...current,
-              status: data.pending ? "SUBMITTED" : "GRADED",
-            }
-          : current,
-      );
-      setReviewOpen(false);
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Có lỗi xảy ra.");
-    } finally {
-      setBusy(false);
+  const submit = useCallback(
+    async (isAutoTimeout = false) => {
+      if (!exam || !attempt) return;
+      setBusy(true);
+      setError("");
+      try {
+        const response = await apiFetch(
+          `${api}/public-content/exams/${exam.id}/attempts/${attempt.attemptId}/submit`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ answers, guestToken: attempt.guestToken }),
+          },
+        );
+        if (!response.ok) {
+          const errBody = (await response.json().catch(() => null)) as {
+            message?: string;
+          } | null;
+          throw new Error(
+            errBody?.message || "Không thể nộp bài. Vui lòng thử lại.",
+          );
+        }
+        const data = (await response.json()) as Result;
+        allowExitRef.current = true;
+        window.sessionStorage.removeItem(`brightpath-attempt-${exam.id}`);
+        window.localStorage.removeItem(`brightpath-attempt-${exam.id}`);
+        setResult(data);
+        setDeadlineMs(null);
+        if (isAutoTimeout) {
+          setAutoSubmittedNotice(
+            "Đã hết thời gian làm bài. Hệ thống đã tự động thu bài và ghi nhận kết quả của bạn.",
+          );
+        }
+        setAttempt((current) =>
+          current
+            ? {
+                ...current,
+                status: data.pending ? "SUBMITTED" : "GRADED",
+              }
+            : current,
+        );
+        setReviewOpen(false);
+        setPendingExitUrl(null);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (cause) {
+        autoSubmittingRef.current = false;
+        setError(cause instanceof Error ? cause.message : "Có lỗi xảy ra.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [answers, attempt, exam],
+  );
+
+  useEffect(() => {
+    if (
+      remainingSeconds !== null &&
+      remainingSeconds <= 0 &&
+      isExamActive &&
+      !autoSubmittingRef.current
+    ) {
+      autoSubmittingRef.current = true;
+      void submit(true);
     }
-  }
+  }, [isExamActive, remainingSeconds, submit]);
 
   async function beginGuest(event: React.FormEvent) {
     event.preventDefault();
@@ -230,13 +448,12 @@ export default function ExamPage() {
     setBusy(true);
     setError("");
     try {
-      const response = await fetch(
+      const response = await apiFetch(
         `${api}/public-content/exams/${exam.id}/attempts/start`,
         {
           method: "POST",
-          credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ participantName: guestName }),
+          body: JSON.stringify({ participantName: guestName, forceNew: true }),
         },
       );
       const data = (await response.json()) as StartResponse & {
@@ -244,20 +461,8 @@ export default function ExamPage() {
       };
       if (!response.ok)
         throw new Error(data.message || "Không thể bắt đầu bài.");
-      const nextAttempt: Attempt = {
-        attemptId: data.attemptId,
-        guestToken: data.guestToken,
-        participantName: data.participantName,
-        status: data.status,
-      };
-      setAttempt(nextAttempt);
-      window.localStorage.setItem(
-        `brightpath-attempt-${exam.id}`,
-        JSON.stringify({
-          attemptId: data.attemptId,
-          guestToken: data.guestToken,
-        }),
-      );
+      allowExitRef.current = false;
+      applyStartResponse(data, exam, data.guestToken);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Có lỗi xảy ra.");
     } finally {
@@ -265,27 +470,94 @@ export default function ExamPage() {
     }
   }
 
-  function restartExam() {
+  async function restartExam() {
     if (!exam) return;
-    window.localStorage.removeItem(`brightpath-attempt-${exam.id}`);
+    const storageKey = `brightpath-attempt-${exam.id}`;
+    window.localStorage.removeItem(storageKey);
+    window.sessionStorage.removeItem(storageKey);
     setAnswers({});
+    setFlaggedPositions([]);
     setResult(null);
     setTeacherFeedback("");
-    setAttempt(null);
+    setAutoSubmittedNotice("");
     setDetailOpen(false);
+    setReviewOpen(false);
+    setPendingExitUrl(null);
     setSaveState("idle");
+    setError("");
+    allowExitRef.current = false;
+
+    if (authenticated) {
+      setBusy(true);
+      try {
+        const response = await apiFetch(
+          `${api}/public-content/exams/${exam.id}/attempts/start`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ forceNew: true }),
+          },
+        );
+        if (!response.ok) throw new Error("Không thể khởi tạo lượt làm mới.");
+        const data = (await response.json()) as StartResponse;
+        applyStartResponse(data, exam);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      } catch (cause) {
+        setAttempt(null);
+        setError(cause instanceof Error ? cause.message : "Có lỗi xảy ra.");
+      } finally {
+        setBusy(false);
+      }
+    } else {
+      setAttempt(null);
+    }
+  }
+
+  function toggleFlag(position: number) {
+    setFlaggedPositions((current) =>
+      current.includes(position)
+        ? current.filter((item) => item !== position)
+        : [...current, position],
+    );
+  }
+
+  function scrollToQuestion(position: number) {
+    document
+      .getElementById(`question-${position}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  async function confirmExitAndSave() {
+    const targetUrl = pendingExitUrl || "/luyen-de";
+    setBusy(true);
+    await saveDraftNow(true);
+    allowExitRef.current = true;
+    setBusy(false);
+    setPendingExitUrl(null);
+    router.push(targetUrl);
   }
 
   return (
     <section className="min-h-screen bg-[#f5f7fa] py-8 md:py-10">
       <div className="container-shell">
-        <Link href="/luyen-de" className="text-sm font-bold text-[#123d68]">
-          ← Danh sách đề
-        </Link>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <Link href="/luyen-de" className="inline-flex items-center gap-1.5 text-sm font-bold text-[#123d68] hover:text-[#d91f2a]">
+            <ArrowLeft size={16} /> {isExamActive ? "Thoát bài làm" : "Danh sách đề"}
+          </Link>
+          {isExamActive && (
+            <button
+              type="button"
+              onClick={() => void restartExam()}
+              className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-[#123d68]"
+            >
+              <RotateCcw size={13} /> {authenticated ? "Làm lại từ đầu" : "Đổi người làm / Làm mới"}
+            </button>
+          )}
+        </div>
         {error && (
           <p
             role="alert"
-            className="mt-5 rounded-xl bg-red-50 p-4 text-red-700"
+            className="mt-5 rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700"
           >
             {error}
           </p>
@@ -298,25 +570,16 @@ export default function ExamPage() {
                   <div>
                     <p className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-white/60">
                       <Clock3 size={14} /> {gradeLabel(exam.grade)} ·{" "}
-                      {exam.durationMinutes} phút
+                      {exam.durationMinutes} phút · {exam.questions.length} câu
                     </p>
                     <h1 className="mt-3 text-2xl font-extrabold md:text-3xl">
                       {exam.title}
                     </h1>
                     <p className="mt-2 max-w-3xl text-sm leading-6 text-white/70">
                       {exam.summary ||
-                        "Làm từng câu trực tiếp trên web và nộp bài để nhận kết quả."}
+                        "Làm từng câu trực tiếp trên web, tự động lưu tiến độ và nộp bài để nhận kết quả ngay."}
                     </p>
                   </div>
-                  <a
-                    href={`${api}/public-content/exams/${exam.id}/file`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="btn-light min-h-10 px-4"
-                  >
-                    <FileText size={16} /> {(exam.source?.mimeType || "application/pdf") === "application/pdf" ? "Xem PDF gốc" : "Mở tệp nguồn"}{" "}
-                    <ExternalLink size={14} />
-                  </a>
                 </div>
               </div>
             )}
@@ -327,7 +590,13 @@ export default function ExamPage() {
                 guestName={guestName}
                 setGuestName={setGuestName}
                 busy={busy}
+                error={error}
+                onRetry={() => {
+                  setError("");
+                  window.location.reload();
+                }}
                 onSubmit={beginGuest}
+                loginHref={`/dang-nhap?returnTo=${encodeURIComponent(`/luyen-de/${params.slug}`)}`}
               />
             )}
 
@@ -338,8 +607,10 @@ export default function ExamPage() {
                 answers={answers}
                 result={result}
                 teacherFeedback={teacherFeedback}
+                autoSubmittedNotice={autoSubmittedNotice}
+                busy={busy}
                 onDetails={() => setDetailOpen(true)}
-                onRestart={restartExam}
+                onRestart={() => void restartExam()}
               />
             )}
 
@@ -351,7 +622,7 @@ export default function ExamPage() {
                     event.preventDefault();
                     setReviewOpen(true);
                   }}
-                  className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px]"
+                  className="mt-6 grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_310px]"
                 >
                   <div className="space-y-5">
                     {exam.questions.map((question, index) => (
@@ -359,14 +630,14 @@ export default function ExamPage() {
                         {question.section &&
                           question.section !==
                             exam.questions[index - 1]?.section && (
-                            <div className="mb-3 rounded-xl bg-[#eaf1f7] px-5 py-4 text-sm font-extrabold leading-6 text-[#123d68]">
-                              {question.section}
-                            </div>
+                            <SectionBlock text={question.section} />
                           )}
                         <QuestionCard
                           question={question}
                           answer={answers[question.position] || ""}
-                          disabled={false}
+                          flagged={flaggedPositions.includes(question.position)}
+                          disabled={busy || remainingSeconds === 0}
+                          onToggleFlag={() => toggleFlag(question.position)}
                           onChange={(answer) =>
                             setAnswers((current) => ({
                               ...current,
@@ -379,23 +650,52 @@ export default function ExamPage() {
                   </div>
                   <aside className="soft-card flex max-h-[calc(100vh-7.5rem)] flex-col p-4 lg:sticky lg:top-24">
                     <div className="flex items-start justify-between gap-3">
-                      <div>
+                      <div className="min-w-0">
                         <h2 className="font-extrabold text-[#092b4c]">
                           Tiến độ bài làm
                         </h2>
-                        <p className="mt-1 text-[11px] text-slate-500">
+                        <p className="mt-1 truncate text-[11px] font-semibold text-slate-500">
                           {attempt.participantName}
                         </p>
                       </div>
-                      <span className="flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
-                        <Save size={12} />
-                        {saveState === "saving"
-                          ? "Đang lưu"
-                          : saveState === "saved"
-                            ? "Đã lưu"
-                            : "Tự lưu"}
-                      </span>
+                      {saveState === "error" ? (
+                        <button
+                          type="button"
+                          onClick={() => void saveDraftNow(false)}
+                          className="flex shrink-0 items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-bold text-[#d91f2a] hover:bg-red-100"
+                        >
+                          <AlertTriangle size={12} /> Chưa lưu · Thử lại
+                        </button>
+                      ) : (
+                        <span className="flex shrink-0 items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                          <Save size={12} />
+                          {saveState === "saving"
+                            ? "Đang lưu..."
+                            : saveState === "saved"
+                              ? "Đã lưu"
+                              : "Tự động lưu"}
+                        </span>
+                      )}
                     </div>
+                    {remainingSeconds !== null && (
+                      <div
+                        className={`mt-3 flex items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-extrabold tabular-nums transition-colors ${
+                          remainingSeconds <= 60
+                            ? "animate-pulse bg-red-100 text-[#d91f2a]"
+                            : remainingSeconds <= 300
+                              ? "bg-red-50 text-[#d91f2a]"
+                              : "bg-[#eaf0f6] text-[#092b4c]"
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <Clock3 size={14} /> Thời gian còn lại
+                        </span>
+                        <span className="text-sm">
+                          {String(Math.floor(remainingSeconds / 60)).padStart(2, "0")}:
+                          {String(remainingSeconds % 60).padStart(2, "0")}
+                        </span>
+                      </div>
+                    )}
                     <div className="mt-3 h-2 shrink-0 overflow-hidden rounded-full bg-slate-100">
                       <div
                         className="h-full rounded-full bg-[#d91f2a] transition-all"
@@ -404,25 +704,57 @@ export default function ExamPage() {
                         }}
                       />
                     </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Đã trả lời {answered}/{exam.questions.length} câu
-                    </p>
-                    <div className="mt-4 grid min-h-0 grid-cols-6 gap-1.5 overflow-y-auto pr-1">
-                      {exam.questions.map((question) => (
-                        <a
-                          key={question.position}
-                          href={`#question-${question.position}`}
-                          className={`grid h-10 place-items-center rounded-lg text-[11px] font-bold ${answers[question.position]?.trim() ? "bg-[#123d68] text-white" : "bg-slate-100 text-slate-500"}`}
-                        >
-                          {question.position}
-                        </a>
-                      ))}
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-semibold text-slate-500">
+                      <span>Đã làm {answered}/{exam.questions.length} câu</span>
+                      {flaggedPositions.length > 0 && (
+                        <span className="text-amber-700">
+                          {flaggedPositions.length} câu đánh dấu
+                        </span>
+                      )}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-3 border-y border-slate-100 py-2 text-[11px] font-semibold text-slate-500">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2.5 rounded-sm bg-[#123d68]" /> Đã trả lời
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2.5 rounded-sm bg-slate-200" /> Chưa làm
+                      </span>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="size-2.5 rounded-sm border-2 border-amber-500 bg-amber-50" /> Xem lại
+                      </span>
+                    </div>
+                    <div className="mt-3 grid min-h-0 grid-cols-6 gap-1.5 overflow-y-auto pr-1">
+                      {exam.questions.map((question) => {
+                        const isDone = Boolean(answers[question.position]?.trim());
+                        const isFlagged = flaggedPositions.includes(question.position);
+                        return (
+                          <button
+                            type="button"
+                            key={question.position}
+                            onClick={() => scrollToQuestion(question.position)}
+                            className={`relative grid h-10 place-items-center rounded-lg text-[11px] font-bold transition-colors ${
+                              isDone
+                                ? "bg-[#123d68] text-white"
+                                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                            } ${isFlagged ? "ring-2 ring-amber-500 ring-offset-1" : ""}`}
+                            aria-label={`Câu ${question.position}${isDone ? ", đã trả lời" : ", chưa trả lời"}${isFlagged ? ", đã đánh dấu xem lại" : ""}`}
+                          >
+                            {question.position}
+                            {isFlagged && (
+                              <span
+                                className="absolute right-1 top-1 size-1.5 rounded-full bg-amber-400"
+                                aria-hidden="true"
+                              />
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                     <button
                       disabled={busy}
                       className="btn-primary mt-4 min-h-11 w-full shrink-0"
                     >
-                      {busy ? "Đang lưu..." : "Kiểm tra và nộp bài"}
+                      {busy ? "Đang xử lý..." : "Kiểm tra và nộp bài"}
                     </button>
                   </aside>
                 </form>
@@ -432,7 +764,10 @@ export default function ExamPage() {
                   answers={answers}
                   setAnswers={setAnswers}
                   result={result}
+                  remainingSeconds={remainingSeconds}
+                  saveState={saveState}
                   busy={busy}
+                  onRetrySave={() => void saveDraftNow(false)}
                   onReview={() => setReviewOpen(true)}
                 />
               ))}
@@ -440,10 +775,24 @@ export default function ExamPage() {
               open={reviewOpen}
               exam={exam}
               answers={answers}
+              flaggedPositions={flaggedPositions}
               webQuestions={webQuestions}
               busy={busy}
               onClose={() => setReviewOpen(false)}
-              onConfirm={submit}
+              onConfirm={() => void submit(false)}
+            />
+            <ExitExamModal
+              open={pendingExitUrl !== null}
+              answered={answered}
+              total={exam.questions.length}
+              busy={busy}
+              authenticated={Boolean(authenticated)}
+              onStay={() => setPendingExitUrl(null)}
+              onSaveAndExit={() => void confirmExitAndSave()}
+              onSubmitNow={() => {
+                setPendingExitUrl(null);
+                setReviewOpen(true);
+              }}
             />
             {attempt && result && (
               <AttemptDetailModal
@@ -461,18 +810,51 @@ export default function ExamPage() {
   );
 }
 
+function SectionBlock({ text }: { text: string }) {
+  const trimmed = text.trim();
+  const isPassage = trimmed.length > 160 || trimmed.includes("\n");
+  if (!isPassage) {
+    return (
+      <div className="mb-3 whitespace-pre-wrap rounded-xl bg-[#eaf1f7] px-5 py-4 text-sm font-extrabold leading-6 text-[#123d68]">
+        {renderFormattedText(trimmed)}
+      </div>
+    );
+  }
+  const newline = trimmed.indexOf("\n");
+  const heading = newline > 0 && newline <= 220 ? trimmed.slice(0, newline).trim() : "";
+  const body = heading ? trimmed.slice(newline + 1).trim() : trimmed;
+  return (
+    <div className="mb-3 rounded-xl border border-[#d6e2ee] bg-[#f4f8fb] px-5 py-4">
+      {heading && (
+        <p className="mb-2 text-sm font-extrabold leading-6 text-[#123d68]">
+          {renderFormattedText(heading)}
+        </p>
+      )}
+      <div className="whitespace-pre-wrap text-[15px] font-medium leading-7 text-slate-700">
+        {renderFormattedText(body)}
+      </div>
+    </div>
+  );
+}
+
 function StartScreen({
   authenticated,
   guestName,
   setGuestName,
   busy,
+  error,
+  onRetry,
   onSubmit,
+  loginHref = "/dang-nhap",
 }: {
   authenticated: boolean | null;
   guestName: string;
   setGuestName: (value: string) => void;
   busy: boolean;
+  error?: string;
+  onRetry?: () => void;
   onSubmit: (event: React.FormEvent) => void;
+  loginHref?: string;
 }) {
   return (
     <Modal
@@ -486,7 +868,25 @@ function StartScreen({
       <div className="mx-auto grid size-12 place-items-center rounded-full bg-[#edf3f8] text-[#123d68]">
         <UserRound size={23} />
       </div>
-      {authenticated === null || authenticated ? (
+      {error ? (
+        <div className="mt-4 text-center">
+          <p className="text-sm font-semibold text-red-600">{error}</p>
+          <div className="mt-4 flex justify-center gap-3">
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                className="btn-primary min-h-10 px-4 text-xs"
+              >
+                Thử lại
+              </button>
+            )}
+            <Link href="/luyen-de" className="btn-outline min-h-10 px-4 text-xs">
+              Về danh sách
+            </Link>
+          </div>
+        </div>
+      ) : authenticated === null || authenticated ? (
         <p className="mt-3 text-center text-sm leading-6 text-slate-500">
           {authenticated === null
             ? "Đang kiểm tra tài khoản..."
@@ -520,7 +920,7 @@ function StartScreen({
             <span className="h-px flex-1 bg-slate-200" /> hoặc
             <span className="h-px flex-1 bg-slate-200" />
           </div>
-          <Link href="/dang-nhap" className="btn-outline w-full">
+          <Link href={loginHref} className="btn-outline w-full">
             <LogIn size={17} /> Đăng nhập tài khoản học viên
           </Link>
         </>
@@ -532,47 +932,76 @@ function StartScreen({
 function QuestionCard({
   question,
   answer,
+  flagged = false,
   disabled,
   result,
+  onToggleFlag,
   onChange,
 }: {
   question: Question;
   answer: string;
+  flagged?: boolean;
   disabled: boolean;
   result?: { status: string; correctAnswer?: string; score?: number };
+  onToggleFlag?: () => void;
   onChange: (answer: string) => void;
 }) {
-  const options = Array.isArray(question.options)
+  const rawOptions = Array.isArray(question.options)
     ? question.options.map(String)
     : [];
+  const options = enrichPronunciationOptions(rawOptions, question.taskType);
+  const promptText = cleanQuestionPrompt(
+    question.content,
+    question.section,
+    question.taskType,
+    question.position,
+  );
   return (
     <article
       id={`question-${question.position}`}
-      className={`soft-card scroll-mt-24 p-5 md:p-6 ${result?.status === "CORRECT" ? "border-emerald-300" : result?.status === "INCORRECT" ? "border-red-300" : ""}`}
+      className={`soft-card scroll-mt-24 p-5 md:p-6 ${result?.status === "CORRECT" ? "border-emerald-300" : result?.status === "INCORRECT" ? "border-red-300" : flagged ? "border-amber-400" : ""}`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs font-extrabold uppercase tracking-wider text-[#d91f2a]">
-          Câu {question.position}
-          {question.sourceLabel &&
-          question.sourceLabel !== String(question.position)
-            ? ` · số ${question.sourceLabel} trong PDF`
-            : ""}
-        </p>
-        <span className="text-xs font-bold text-slate-400">
-          {question.points} điểm
-        </span>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs font-extrabold uppercase tracking-wider text-[#d91f2a]">
+            Câu {question.position}
+            {question.sourceLabel &&
+            question.sourceLabel !== String(question.position)
+              ? ` · số ${question.sourceLabel} trong đề`
+              : ""}
+          </p>
+          {question.taskType && question.taskType !== "GENERAL" && (
+            <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-600">
+              {taskTypeLabels[question.taskType] || "Dạng khác"}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {onToggleFlag && !result && (
+            <button
+              type="button"
+              onClick={onToggleFlag}
+              aria-pressed={flagged}
+              className={`inline-flex min-h-8 items-center gap-1.5 rounded-lg border px-2.5 py-1 text-[11px] font-bold transition-colors ${
+                flagged
+                  ? "border-amber-400 bg-amber-50 text-amber-800"
+                  : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:text-[#092b4c]"
+              }`}
+            >
+              <Flag size={12} /> {flagged ? "Đã đánh dấu" : "Xem lại sau"}
+            </button>
+          )}
+          <span className="text-xs font-bold text-slate-400">
+            {question.points} điểm
+          </span>
+        </div>
       </div>
       <p className="mt-3 whitespace-pre-wrap text-sm font-semibold leading-7 text-[#172b3e] md:text-[15px]">
-        {question.content || `Câu ${question.position}`}
+        {renderFormattedText(promptText)}
       </p>
-      {question.taskType && question.taskType !== "GENERAL" && (
-        <span className="mt-3 inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-bold text-slate-600">
-          {taskTypeLabels[question.taskType] || "Dạng khác"}
-        </span>
-      )}
       {question.sourcePage && (
         <p className="mt-1 text-[11px] text-slate-400">
-          Trang PDF {question.sourcePage}
+          Trang {question.sourcePage}
         </p>
       )}
       {question.taskType === "MATCHING" && matchingData(question).left.length > 1 && matchingData(question).right.length > 1 ? (
@@ -607,7 +1036,7 @@ function QuestionCard({
                   onChange={() => onChange(value)}
                   className="mt-1 accent-[#d91f2a]"
                 />
-                <span>{option}</span>
+                <span>{renderFormattedText(option)}</span>
               </label>
             );
           })}
@@ -632,7 +1061,7 @@ function QuestionCard({
                   }}
                   className="mt-1 accent-[#d91f2a]"
                 />
-                <span>{option}</span>
+                <span>{renderFormattedText(option)}</span>
               </label>
             );
           })}
@@ -665,7 +1094,9 @@ function QuestionCard({
               ? `Giáo viên đã chấm: ${result.score} điểm`
               : result.status === "PENDING"
                 ? "Chờ giáo viên chấm"
-                : `Chưa đúng · Đáp án: ${result.correctAnswer}`}
+                : result.correctAnswer
+                  ? `Chưa đúng · Đáp án: ${result.correctAnswer}`
+                  : "Chưa đúng"}
         </p>
       )}
     </article>
@@ -860,6 +1291,8 @@ function CompletionScreen({
   answers,
   result,
   teacherFeedback,
+  autoSubmittedNotice,
+  busy = false,
   onDetails,
   onRestart,
 }: {
@@ -868,6 +1301,8 @@ function CompletionScreen({
   answers: Record<string, string>;
   result: Result;
   teacherFeedback?: string;
+  autoSubmittedNotice?: string;
+  busy?: boolean;
   onDetails: () => void;
   onRestart: () => void;
 }) {
@@ -923,11 +1358,24 @@ function CompletionScreen({
       </div>
 
       <div className="p-5 md:p-6">
+        {autoSubmittedNotice && (
+          <p className="mb-3 rounded-xl bg-blue-50 p-4 text-sm leading-6 text-[#092b4c]">
+            <strong>Thông báo thời gian:</strong> {autoSubmittedNotice}
+          </p>
+        )}
         {result.pending > 0 && (
           <p className="rounded-xl bg-amber-50 p-4 text-sm leading-6 text-amber-900">
             <strong>Điểm trên mới là phần chấm tự động.</strong> Có{" "}
             {result.pending} câu chưa có đáp án hoặc cần giáo viên chấm tay, vì
             vậy chưa có điểm cuối cùng.
+          </p>
+        )}
+        {(result.showAnswers === false || exam.showAnswers === false) && (
+          <p className="mt-3 rounded-xl bg-slate-100 p-4 text-sm leading-6 text-[#092b4c]">
+            <strong>Bảo mật đáp án kỳ thi:</strong> Giáo viên đang tạm ẩn đáp án
+            đúng để đảm bảo công bằng cho các học viên đang làm bài. Bạn vẫn có
+            thể xem lại lựa chọn và kết quả đúng/sai của từng câu; đáp án chi
+            tiết sẽ tự động hiển thị khi giáo viên công bố.
           </p>
         )}
         {teacherFeedback && (
@@ -939,8 +1387,13 @@ function CompletionScreen({
           <button type="button" onClick={onDetails} className="btn-primary">
             <Eye size={17} /> Xem chi tiết bài làm
           </button>
-          <button type="button" onClick={onRestart} className="btn-outline">
-            <RotateCcw size={17} /> Làm lại đề
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onRestart}
+            className="btn-outline"
+          >
+            <RotateCcw size={17} /> {busy ? "Đang tạo lượt mới..." : "Làm lại đề"}
           </button>
           <Link href="/luyen-de" className="btn-outline">
             <ArrowLeft size={17} /> Quay lại các bài luyện
@@ -961,7 +1414,8 @@ function ResultStat({ label, value }: { label: string; value: string }) {
 }
 
 function questionOptions(question: Question) {
-  return Array.isArray(question.options) ? question.options.map(String) : [];
+  const raw = Array.isArray(question.options) ? question.options.map(String) : [];
+  return enrichPronunciationOptions(raw, question.taskType);
 }
 
 function choiceLetter(value: string) {
@@ -1031,6 +1485,8 @@ function AttemptDetailModal({
   result: Result;
   onClose: () => void;
 }) {
+  const answersVisible =
+    result.showAnswers !== false && exam.showAnswers !== false;
   return (
     <Modal
       open={open}
@@ -1040,14 +1496,27 @@ function AttemptDetailModal({
       size="xl"
     >
       <div className="space-y-3">
-        {exam.questions.map((question) => {
+        {!answersVisible && (
+          <div className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
+            <strong>Lưu ý:</strong> Đáp án đúng của đề này đang được giáo viên
+            ẩn trong thời gian thi. Hệ thống chỉ hiển thị phương án bạn đã chọn
+            và kết quả chấm của từng câu.
+          </div>
+        )}
+        {exam.questions.map((question, index) => {
           const detail = result.details.find(
             (item) => item.position === question.position,
           );
           const response = answers[question.position] || "";
+          const showSection =
+            !!question.section &&
+            question.section !== exam.questions[index - 1]?.section;
           return (
+            <div key={question.position}>
+            {showSection && question.section && (
+              <SectionBlock text={question.section} />
+            )}
             <article
-              key={question.position}
               className="rounded-xl border border-slate-200 p-4 md:p-5"
             >
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1056,7 +1525,14 @@ function AttemptDetailModal({
                     Câu {question.position}
                   </strong>
                   <p className="mt-2 whitespace-pre-wrap text-sm font-semibold leading-6 text-[#172b3e]">
-                    {question.content || `Câu ${question.position}`}
+                    {renderFormattedText(
+                      cleanQuestionPrompt(
+                        question.content,
+                        question.section,
+                        question.taskType,
+                        question.position,
+                      ),
+                    )}
                   </p>
                   {questionOptions(question).length > 0 && (
                     <div className="mt-3 grid gap-2 sm:grid-cols-2">
@@ -1065,15 +1541,18 @@ function AttemptDetailModal({
                         const chosen = question.kind === "MULTIPLE_CHOICE"
                           ? multipleAnswers(response).includes(value)
                           : choiceValue(response) === value;
-                        const correct = question.kind === "MULTIPLE_CHOICE"
-                          ? multipleAnswers(detail?.correctAnswer || "").includes(value)
-                          : choiceValue(detail?.correctAnswer || "") === value;
+                        const correct =
+                          answersVisible &&
+                          Boolean(detail?.correctAnswer) &&
+                          (question.kind === "MULTIPLE_CHOICE"
+                            ? multipleAnswers(detail?.correctAnswer || "").includes(value)
+                            : choiceValue(detail?.correctAnswer || "") === value);
                         return (
                           <div
                             key={option}
                             className={`rounded-lg border px-3 py-2 text-xs leading-5 ${chosen ? "border-[#123d68] bg-[#edf3f8] font-bold text-[#092b4c]" : correct ? "border-emerald-300 bg-emerald-50 text-emerald-800" : "border-slate-200 text-slate-500"}`}
                           >
-                            {option}
+                            {renderFormattedText(option)}
                             {chosen && (
                               <span className="ml-2 text-[11px] uppercase">
                                 Bạn chọn
@@ -1090,12 +1569,18 @@ function AttemptDetailModal({
                     </div>
                   )}
                   <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                    <strong>Bài làm:</strong> {answerText(question, response)}
+                    <strong>Bài làm:</strong> {stripFormattedText(answerText(question, response))}
                   </p>
+                  {answersVisible && questionOptions(question).length === 0 && detail?.correctAnswer && (
+                    <p className="mt-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+                      <strong>Đáp án đúng:</strong> {stripFormattedText(detail.correctAnswer)}
+                    </p>
+                  )}
                 </div>
                 <ResultBadge detail={detail} />
               </div>
             </article>
+            </div>
           );
         })}
       </div>
@@ -1138,6 +1623,7 @@ function SubmissionReview({
   open,
   exam,
   answers,
+  flaggedPositions = [],
   webQuestions,
   busy,
   onClose,
@@ -1146,6 +1632,7 @@ function SubmissionReview({
   open: boolean;
   exam: Exam;
   answers: Record<string, string>;
+  flaggedPositions?: number[];
   webQuestions: boolean;
   busy: boolean;
   onClose: () => void;
@@ -1161,29 +1648,38 @@ function SubmissionReview({
     <Modal
       open={open}
       title="Rà soát trước khi nộp bài"
-      description={`Bạn đã hoàn thành ${completed.length}/${exam.questions.length} câu.`}
+      description={`Bạn đã hoàn thành ${completed.length}/${exam.questions.length} câu${flaggedPositions.length ? ` · ${flaggedPositions.length} câu đang đánh dấu xem lại` : ""}.`}
       onClose={onClose}
       size="lg"
     >
       <div
-        className={`rounded-xl p-4 text-sm leading-6 ${missing.length ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-900"}`}
+        className={`rounded-xl p-4 text-sm leading-6 ${missing.length || flaggedPositions.length ? "bg-amber-50 text-amber-900" : "bg-emerald-50 text-emerald-900"}`}
       >
         <strong className="flex items-center gap-2">
           <ListChecks size={18} />
           {missing.length
             ? `Còn ${missing.length} câu chưa trả lời`
-            : "Bạn đã trả lời đầy đủ tất cả câu hỏi"}
+            : flaggedPositions.length
+              ? `Bạn có ${flaggedPositions.length} câu đang đánh dấu cần kiểm tra lại`
+              : "Bạn đã trả lời đầy đủ tất cả câu hỏi"}
         </strong>
-        {missing.length > 0 && (
+        {(missing.length > 0 || flaggedPositions.length > 0) && (
           <p className="mt-1">
-            Bạn vẫn có thể nộp bài, nhưng nên kiểm tra lại các câu màu vàng
-            trước khi xác nhận.
+            Nhấn vào bất kỳ câu nào bên dưới để quay lại kiểm tra trước khi xác
+            nhận nộp bài.
           </p>
         )}
       </div>
       <div className="mt-5 space-y-2">
         {exam.questions.map((question) => {
           const done = !!answers[question.position]?.trim();
+          const flagged = flaggedPositions.includes(question.position);
+          const promptText = cleanQuestionPrompt(
+            question.content,
+            question.section,
+            question.taskType,
+            question.position,
+          );
           const content = (
             <div className="flex min-w-0 flex-1 items-start gap-3 text-left">
               <span
@@ -1192,15 +1688,22 @@ function SubmissionReview({
                 {question.position}
               </span>
               <div className="min-w-0 flex-1">
-                <p className="line-clamp-2 text-xs font-semibold leading-5 text-[#172b3e]">
-                  {question.content || `Câu ${question.position}`}
-                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="line-clamp-2 text-xs font-semibold leading-5 text-[#172b3e]">
+                    {renderFormattedText(promptText)}
+                  </p>
+                  {flagged && (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                      <Flag size={10} /> Đánh dấu
+                    </span>
+                  )}
+                </div>
                 <p
                   className={`mt-1 text-xs ${done ? "text-emerald-700" : "text-amber-700"}`}
                 >
                   <strong>{done ? "Đã trả lời:" : "Chưa trả lời"}</strong>{" "}
                   {done
-                    ? answerText(question, answers[question.position] || "")
+                    ? stripFormattedText(answerText(question, answers[question.position] || ""))
                     : ""}
                 </p>
               </div>
@@ -1254,19 +1757,89 @@ function SubmissionReview({
   );
 }
 
+function ExitExamModal({
+  open,
+  answered,
+  total,
+  busy,
+  authenticated = false,
+  onStay,
+  onSaveAndExit,
+  onSubmitNow,
+}: {
+  open: boolean;
+  answered: number;
+  total: number;
+  busy: boolean;
+  authenticated?: boolean;
+  onStay: () => void;
+  onSaveAndExit: () => void;
+  onSubmitNow: () => void;
+}) {
+  return (
+    <Modal
+      open={open}
+      title="Bạn đang trong thời gian làm bài"
+      description={`Tiến độ hiện tại: đã trả lời ${answered}/${total} câu hỏi.`}
+      onClose={onStay}
+      size="sm"
+    >
+      <div className="rounded-xl bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+        <p>
+          Nếu bạn rời trang lúc này, đồng hồ làm bài vẫn tiếp tục tính giờ theo
+          quy định. Bạn muốn tiếp tục hoàn thành bài thi hay lưu nháp để quay lại
+          sau?
+        </p>
+        <p className="mt-2 border-t border-amber-200/60 pt-2 text-xs font-medium text-amber-800">
+          {authenticated
+            ? "✓ Bài làm của bạn được lưu an toàn vào tài khoản Bright Path."
+            : "✓ Bài làm tạm thời được lưu trên trình duyệt của máy này. Bạn có thể mở lại đề để làm tiếp trong thời gian quy định."}
+        </p>
+      </div>
+      <div className="mt-5 flex flex-col gap-2.5">
+        <button type="button" onClick={onStay} className="btn-primary w-full">
+          Tiếp tục làm bài
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onSubmitNow}
+          className="btn-outline w-full"
+        >
+          Kiểm tra và nộp bài ngay
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onSaveAndExit}
+          className="min-h-11 w-full rounded-xl border border-slate-200 px-4 text-xs font-bold text-slate-600 hover:bg-slate-50"
+        >
+          {busy ? "Đang lưu nháp..." : "Lưu nháp và rời khỏi trang"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 function PdfAnswerSheet({
   exam,
   answers,
   setAnswers,
   result,
+  remainingSeconds,
+  saveState,
   busy,
+  onRetrySave,
   onReview,
 }: {
   exam: Exam;
   answers: Record<string, string>;
   setAnswers: React.Dispatch<React.SetStateAction<Record<string, string>>>;
   result: Result | null;
+  remainingSeconds: number | null;
+  saveState: "idle" | "saving" | "saved" | "error";
   busy: boolean;
+  onRetrySave: () => void;
   onReview: () => void;
 }) {
   return (
@@ -1285,8 +1858,7 @@ function PdfAnswerSheet({
           <div className="grid min-h-64 place-items-center p-8 text-center">
             <div>
               <FileText className="mx-auto text-[#123d68]" size={36} />
-              <p className="mt-3 text-sm text-slate-600">Tệp Word/Excel được mở bằng ứng dụng trên thiết bị.</p>
-              <a href={`${api}/public-content/exams/${exam.id}/file`} className="btn-outline mt-4">Tải tệp nguồn</a>
+              <p className="mt-3 text-sm text-slate-600">Đề này sử dụng phiếu trả lời trực tuyến bên phải.</p>
             </div>
           </div>
         )}
@@ -1298,7 +1870,39 @@ function PdfAnswerSheet({
         }}
         className="soft-card p-5 lg:sticky lg:top-24"
       >
-        <h2 className="text-lg font-extrabold text-[#092b4c]">Phiếu trả lời</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-lg font-extrabold text-[#092b4c]">Phiếu trả lời</h2>
+          {saveState === "error" ? (
+            <button
+              type="button"
+              onClick={onRetrySave}
+              className="text-[11px] font-bold text-[#d91f2a] underline"
+            >
+              Chưa lưu · Thử lại
+            </button>
+          ) : (
+            <span className="text-[11px] font-semibold text-emerald-700">
+              {saveState === "saving" ? "Đang lưu..." : saveState === "saved" ? "Đã lưu" : "Tự động lưu"}
+            </span>
+          )}
+        </div>
+        {remainingSeconds !== null && (
+          <div
+            className={`mt-3 flex items-center justify-between rounded-xl px-3.5 py-2.5 text-xs font-extrabold tabular-nums ${
+              remainingSeconds <= 300
+                ? "bg-red-50 text-[#d91f2a]"
+                : "bg-[#eaf0f6] text-[#092b4c]"
+            }`}
+          >
+            <span className="flex items-center gap-1.5">
+              <Clock3 size={14} /> Thời gian còn lại
+            </span>
+            <span className="text-sm">
+              {String(Math.floor(remainingSeconds / 60)).padStart(2, "0")}:
+              {String(remainingSeconds % 60).padStart(2, "0")}
+            </span>
+          </div>
+        )}
         <div className="mt-5 max-h-[55vh] space-y-3 overflow-y-auto pr-2">
           {exam.questions.map((question) => (
             <div
@@ -1337,7 +1941,7 @@ function PdfAnswerSheet({
                   <option value="">Chưa chọn</option>
                   {questionOptions(question).map((option) => (
                     <option key={option} value={choiceValue(option)}>
-                      {option}
+                      {stripFormattedText(option)}
                     </option>
                   ))}
                 </select>
@@ -1359,7 +1963,7 @@ function PdfAnswerSheet({
                           })}
                           className="mt-0.5 accent-[#d91f2a]"
                         />
-                        <span>{option}</span>
+                        <span>{renderFormattedText(option)}</span>
                       </label>
                     );
                   })}

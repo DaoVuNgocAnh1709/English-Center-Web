@@ -15,6 +15,6 @@ import { StaffService } from "./staff.service";
 @Roles(Role.ADMIN, Role.TEACHER)
 export class StaffController {
   constructor(private readonly staff: StaffService) {}
-  @Get("materials") materials() { return this.staff.materials(); }
+  @Get("materials") materials(@CurrentUser() user: AccessPayload) { return this.staff.materials(user); }
   @Post("materials") createMaterial(@Body() dto: CreateMaterialDto, @CurrentUser() user: AccessPayload) { return this.staff.createMaterial(dto, user); }
 }

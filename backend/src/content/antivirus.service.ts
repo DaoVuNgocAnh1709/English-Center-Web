@@ -6,11 +6,12 @@ export class MalwareDetectedError extends Error {}
 @Injectable()
 export class AntivirusService {
   async scan(buffer: Buffer) {
-    const host = process.env.CLAMAV_HOST;
+    const enabled = process.env.CLAMAV_ENABLED !== "false" && process.env.CLAMAV_REQUIRED !== "false";
+    const host = process.env.CLAMAV_HOST?.trim();
     const port = Number(process.env.CLAMAV_PORT || 3310);
-    const required = process.env.CLAMAV_REQUIRED !== "false";
-    if (!host) {
-      if (required) throw new ServiceUnavailableException("Dịch vụ quét virus chưa được cấu hình.");
+    const required = process.env.CLAMAV_REQUIRED === "true";
+    if (!enabled || !host) {
+      if (required && !host) throw new ServiceUnavailableException("Dịch vụ quét virus chưa được cấu hình.");
       return "SKIPPED" as const;
     }
     try {
