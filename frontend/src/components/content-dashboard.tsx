@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -8,8 +7,10 @@ import {
   BookOpen,
   CheckCircle2,
   ClipboardList,
+  ExternalLink,
   FileCheck2,
   FileSearch,
+  Globe,
   GraduationCap,
   LayoutDashboard,
   LogOut,
@@ -245,6 +246,19 @@ async function request(path: string, init?: RequestInit) {
 
 export function ContentDashboard({ role }: { role: Role }) {
   const router = useRouter();
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem("bp_allow_public_view");
+    }
+  }, []);
+
+  const goToPublicSite = () => {
+    if (typeof window !== "undefined") {
+      window.sessionStorage.setItem("bp_allow_public_view", "true");
+    }
+    router.push("/");
+  };
   const [user, setUser] = useState<User | null>(null);
   const [tab, setTab] = useState("overview");
   const [sources, setSources] = useState<Source[]>([]);
@@ -535,16 +549,32 @@ export function ContentDashboard({ role }: { role: Role }) {
   return (
     <div className="workspace-shell">
       <aside className="workspace-sidebar relative shrink-0 px-5 py-6 lg:pb-24">
-        <Link href="/" className="flex items-center gap-3" aria-label="Về trang chủ Bright Path">
-          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d91f2a] text-sm font-black italic">BP</span>
-          <span><strong className="block text-sm tracking-[.04em]">BRIGHT PATH</strong><small className="text-[11px] font-semibold tracking-[.08em] text-white/55">WORKSPACE</small></span>
-        </Link>
+        <button
+          type="button"
+          onClick={goToPublicSite}
+          className="flex items-center gap-3 text-left transition hover:opacity-90"
+          aria-label="Về trang chủ Bright Path"
+        >
+          <span className="grid h-10 w-10 place-items-center rounded-xl bg-[#d91f2a] text-sm font-black italic text-white">BP</span>
+          <span><strong className="block text-sm tracking-[.04em] text-white">BRIGHT PATH</strong><small className="text-[11px] font-semibold tracking-[.08em] text-white/55">WORKSPACE</small></span>
+        </button>
         <div className="mt-7 flex items-center gap-3 border-y border-white/10 py-5">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-xs font-extrabold text-[#082c50]">{userInitials}</span>
-          <div className="min-w-0"><p className="truncate text-sm font-bold">{user.fullName}</p><p className="mt-0.5 truncate text-[11px] text-white/55">{role === "ADMIN" ? "Quản trị trung tâm" : "Giáo viên"}</p></div>
+          <div className="min-w-0"><p className="truncate text-sm font-bold text-white">{user.fullName}</p><p className="mt-0.5 truncate text-[11px] text-white/55">{role === "ADMIN" ? "Quản trị trung tâm" : "Giáo viên"}</p></div>
         </div>
+        <button
+          type="button"
+          onClick={goToPublicSite}
+          className="mt-3.5 mb-2 flex w-full items-center justify-between gap-2 rounded-xl border border-white/15 bg-white/10 px-3.5 py-2.5 text-xs font-bold text-white transition hover:bg-white/20 hover:border-white/25"
+        >
+          <span className="flex items-center gap-2">
+            <Globe size={15} className="text-white/80" />
+            <span>Xem website công khai</span>
+          </span>
+          <ExternalLink size={13} className="text-white/60" />
+        </button>
         <nav
-          className="mt-5 grid grid-cols-2 gap-2 lg:block"
+          className="mt-4 grid grid-cols-2 gap-2 lg:block"
           aria-label="Chức năng quản trị"
         >
           {nav.map(([key, label, Icon]) => (
@@ -564,6 +594,9 @@ export function ContentDashboard({ role }: { role: Role }) {
         </nav>
         <button
           onClick={async () => {
+            if (typeof window !== "undefined") {
+              window.sessionStorage.removeItem("bp_allow_public_view");
+            }
             await fetch(`${api}/auth/logout`, {
               method: "POST",
               credentials: "include",
@@ -580,7 +613,17 @@ export function ContentDashboard({ role }: { role: Role }) {
         <div className="mx-auto max-w-6xl">
           <div className="workspace-topbar mb-7">
             <div><h1 className="workspace-title">{nav.find((item) => item[0] === tab)?.[1]}</h1><p className="workspace-subtitle">{tab === "overview" ? "Theo dõi nội dung, học viên và các việc cần xử lý trong một nơi." : tab === "exams" ? "Tạo đề từ PDF, rà soát câu hỏi và quản lý trạng thái xuất bản." : tab === "attempts" ? "Theo dõi tiến độ, kết quả tự động và các câu đang chờ chấm tay." : tab === "materials" ? "Tổ chức học liệu theo cấp học, danh mục và trạng thái duyệt." : "Xử lý thông tin mới và cập nhật trạng thái liên hệ."}</p></div>
-            <span className="status-dot shrink-0 rounded-full bg-white px-4 py-2 text-xs font-bold text-emerald-700 shadow-sm">Hệ thống hoạt động</span>
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                type="button"
+                onClick={goToPublicSite}
+                className="btn-outline hidden sm:inline-flex min-h-9 items-center gap-1.5 px-3 text-xs font-bold"
+              >
+                <Globe size={14} />
+                <span>Xem trang chủ</span>
+              </button>
+              <span className="status-dot rounded-full bg-white px-4 py-2 text-xs font-bold text-emerald-700 shadow-sm">Hệ thống hoạt động</span>
+            </div>
           </div>
           {notice && (
             <p

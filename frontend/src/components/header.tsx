@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BookOpenCheck, ChevronDown, LogIn, LogOut, Menu, UserRound, X } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, ChevronDown, LogIn, LogOut, Menu, UserRound, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "@/lib/api-client";
 
@@ -45,7 +45,15 @@ export function Header() {
       prevPathname.current.startsWith("/dang-nhap") ||
       prevPathname.current.startsWith("/quen-mat-khau");
     prevPathname.current = pathname;
-    if (lastFetchedAuthState.current && !cameFromAuthPage) return;
+    if (lastFetchedAuthState.current && !cameFromAuthPage) {
+      if (user && (user.role === "TEACHER" || user.role === "ADMIN")) {
+        const allowPublic = typeof window !== "undefined" && window.sessionStorage.getItem("bp_allow_public_view") === "true";
+        if (!allowPublic) {
+          router.replace(accountPath(user.role));
+        }
+      }
+      return;
+    }
 
     let active = true;
     lastFetchedAuthState.current = true;
@@ -56,10 +64,17 @@ export function Header() {
         setAccountOpen(false);
         if (!response.ok) return setUser(null);
         const data = (await response.json()) as { authenticated: boolean; user: CurrentUser | null };
-        setUser(data.authenticated ? data.user : null);
+        const currentUser = data.authenticated ? data.user : null;
+        setUser(currentUser);
+        if (currentUser && (currentUser.role === "TEACHER" || currentUser.role === "ADMIN")) {
+          const allowPublic = typeof window !== "undefined" && window.sessionStorage.getItem("bp_allow_public_view") === "true";
+          if (!allowPublic) {
+            router.replace(accountPath(currentUser.role));
+          }
+        }
       }).catch(() => active && setUser(null));
     return () => { active = false; };
-  }, [pathname]);
+  }, [pathname, user, router]);
   useEffect(() => {
     const outside = (event: MouseEvent) => { if (!accountRef.current?.contains(event.target as Node)) setAccountOpen(false); };
     const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setAccountOpen(false); };
@@ -69,6 +84,9 @@ export function Header() {
   async function logout() {
     await fetch(`${api}/auth/logout`, { method: "POST", credentials: "include" });
     try {
+      if (typeof window !== "undefined") {
+        window.sessionStorage.removeItem("bp_allow_public_view");
+      }
       for (const storage of [window.localStorage, window.sessionStorage]) {
         const keysToRemove: string[] = [];
         for (let i = 0; i < storage.length; i += 1) {
@@ -96,6 +114,20 @@ export function Header() {
         {links.map(([label, href]) => { const active = pathname === href || pathname.startsWith(`${href}/`) || (isNavigating && navState?.to === href); return <Link key={label} href={href} onClick={(event) => trackNavigation(event, href)} aria-current={active ? "page" : undefined} className={`group relative py-7 text-[13px] font-bold transition-colors ${active ? "text-[#d91f2a]" : "text-slate-700 hover:text-[#d91f2a]"}`}>{label}<span className={`absolute inset-x-0 bottom-4 h-0.5 origin-left bg-[#d91f2a] transition-transform duration-300 ${active ? "scale-x-100" : "scale-x-0 group-hover:scale-x-100"}`}/></Link>; })}
       </nav>
       <div className="hidden items-center gap-3 xl:flex">
+        {user && (user.role === "TEACHER" || user.role === "ADMIN") && (
+          <Link
+            href={accountPath(user.role)}
+            onClick={() => {
+              if (typeof window !== "undefined") {
+                window.sessionStorage.removeItem("bp_allow_public_view");
+              }
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full border border-[#092b4c]/20 bg-[#092b4c]/5 px-3.5 py-2 text-xs font-bold text-[#092b4c] transition hover:bg-[#092b4c] hover:text-white"
+          >
+            <ArrowLeft size={14} />
+            Quay lại {user.role === "ADMIN" ? "Quản trị" : "Cổng Giáo viên"}
+          </Link>
+        )}
         <Link href="/lien-he" className="btn-primary min-h-11 px-5">Đăng ký học thử</Link>
         {user ? <div ref={accountRef} className="relative">
           <button type="button" onClick={() => setAccountOpen((value) => !value)} className="flex items-center gap-2 rounded-full border border-slate-200 bg-white p-1.5 pr-3 shadow-sm transition hover:border-[#123d68]/35 hover:shadow-md" aria-label="Mở menu tài khoản" aria-expanded={accountOpen}>
@@ -105,7 +137,7 @@ export function Header() {
           {accountOpen && <div className="absolute right-0 top-[calc(100%+12px)] w-72 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-[0_20px_55px_rgba(9,43,76,.18)]">
             <div className="border-b border-slate-100 px-5 py-4"><p className="truncate text-sm font-extrabold text-[#092b4c]">{user.fullName}</p><p className="mt-1 truncate text-xs text-slate-500">{user.email}</p></div>
             <div className="p-2">
-              <Link href={accountPath(user.role)} onClick={() => setAccountOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><UserRound size={18}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
+              <Link href={accountPath(user.role)} onClick={() => { if (typeof window !== "undefined") window.sessionStorage.removeItem("bp_allow_public_view"); setAccountOpen(false); }} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><UserRound size={18}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
               {user.role === "STUDENT" && <Link href="/hoc-vien#lich-su" onClick={() => setAccountOpen(false)} className="flex items-center gap-3 rounded-xl px-3 py-3 text-sm font-bold text-slate-700 transition hover:bg-slate-50 hover:text-[#123d68]"><BookOpenCheck size={18}/>Lịch sử luyện đề</Link>}
               <button type="button" onClick={logout} className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left text-sm font-bold text-red-600 transition hover:bg-red-50"><LogOut size={18}/>Đăng xuất</button>
             </div>
@@ -119,7 +151,22 @@ export function Header() {
         {links.map(([label, href]) => <Link key={label} href={href} onClick={() => setOpen(false)} className="border-b border-slate-100 px-1 py-4 text-sm font-bold">{label}</Link>)}
         {user ? <div className="mt-4 rounded-2xl bg-slate-50 p-4">
           <div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-full bg-[#123d68] text-xs font-extrabold text-white">{initials(user.fullName)}</span><div className="min-w-0"><p className="truncate text-sm font-extrabold text-[#092b4c]">{user.fullName}</p><p className="truncate text-xs text-slate-500">{user.email}</p></div></div>
-          <Link href={accountPath(user.role)} onClick={() => setOpen(false)} className="btn-outline mt-4 w-full"><UserRound size={17}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
+          {(user.role === "TEACHER" || user.role === "ADMIN") && (
+            <Link
+              href={accountPath(user.role)}
+              onClick={() => {
+                if (typeof window !== "undefined") {
+                  window.sessionStorage.removeItem("bp_allow_public_view");
+                }
+                setOpen(false);
+              }}
+              className="btn-primary mt-3 flex w-full items-center justify-center gap-2 text-xs"
+            >
+              <ArrowLeft size={14} />
+              Quay lại {user.role === "ADMIN" ? "Quản trị" : "Cổng Giáo viên"}
+            </Link>
+          )}
+          <Link href={accountPath(user.role)} onClick={() => { if (typeof window !== "undefined") window.sessionStorage.removeItem("bp_allow_public_view"); setOpen(false); }} className="btn-outline mt-3 w-full"><UserRound size={17}/>{user.role === "STUDENT" ? "Thông tin cá nhân" : "Trang quản trị"}</Link>
           <button type="button" onClick={logout} className="mt-3 flex w-full items-center justify-center gap-2 text-sm font-extrabold text-red-600"><LogOut size={17}/>Đăng xuất</button>
         </div> : <Link href="/dang-nhap" onClick={() => setOpen(false)} className="btn-outline mt-4"><LogIn size={17}/>Đăng nhập</Link>}
         <Link href="/lien-he" onClick={() => setOpen(false)} className="btn-primary mt-3">Đăng ký học thử</Link>
