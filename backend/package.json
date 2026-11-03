@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "node prisma/seed.js"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.13",

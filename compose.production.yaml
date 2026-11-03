@@ -28,7 +28,7 @@ services:
     volumes: !override
       - uploads_data:/app/uploads
     ports: !reset []
-    command: sh -c "npx prisma migrate deploy && node dist/main.js"
+    command: sh -c "npx prisma migrate deploy && node prisma/seed.js && node dist/main.js"
 
   frontend:
     build:
