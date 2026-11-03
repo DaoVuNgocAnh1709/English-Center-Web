@@ -13,5 +13,7 @@ backend/uploads/
 test-results/
 playwright-report/
 *.png
+!frontend/public/
+!frontend/public/**
 .DS_Store
 
