@@ -43,6 +43,9 @@ services:
     command: node server.js
 
   nginx:
+    volumes: !override
+      - ./infrastructure/nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
     ports: !override
       - "80:80"
-
+      - "443:443"
