@@ -1,0 +1,17 @@
+# Optional ClamAV Antivirus service (requires ~1.5 GB RAM)
+# To use: docker compose -f compose.yaml -f compose.clamav.yaml up -d
+services:
+  clamav:
+    image: clamav/clamav:stable
+    volumes:
+      - clamav_data:/var/lib/clamav
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+    restart: unless-stopped
+
+volumes:
+  clamav_data:
