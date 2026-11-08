@@ -16,6 +16,7 @@ export type ExtractedQuestion = {
   content: string;
   options: string[];
   kind: QuestionKind;
+  answer?: string | null;
   sourcePage: number;
   recognitionConfidence: number;
   reviewFlags: string[];
@@ -197,6 +198,40 @@ export function parseQuestionPageLayouts(pages: PositionedLine[][]) {
   return parsePositionedQuestionLines(pages.flatMap((lines) => orderPageLines(lines)));
 }
 
+export function parseAnswerKeyGrid(lines: string[]): Map<number, string> {
+  const result = new Map<number, string>();
+  if (!lines.length) return result;
+
+  const fullText = lines.join(" ").replace(/<COL>/g, " ");
+
+  // Pattern 1: e.g. "Câu 1: A", "Question 1. B", "1. A", "1 - B", "1: C", "1) D"
+  const regexExplicit = /(?:câu|question|\b)\s*(\d{1,3})\s*[:.\-/)]\s*([A-Ha-h]|true|false|t|f|[^\s,;]+)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = regexExplicit.exec(fullText)) !== null) {
+    const qNum = parseInt(match[1], 10);
+    const rawAns = match[2].trim();
+    if (qNum > 0 && qNum <= 300) {
+      const upper = rawAns.toUpperCase();
+      const ans = upper === "TRUE" ? "T" : upper === "FALSE" ? "F" : upper.length <= 4 ? upper : rawAns;
+      result.set(qNum, ans);
+    }
+  }
+
+  if (result.size >= 1) return result;
+
+  // Pattern 2: Compact notation like "1A 2B 3C 4D" or "1A, 2B, 3C"
+  const regexCompact = /\b(\d{1,3})([A-Da-d])\b/g;
+  while ((match = regexCompact.exec(fullText)) !== null) {
+    const qNum = parseInt(match[1], 10);
+    const ans = match[2].toUpperCase();
+    if (qNum > 0 && qNum <= 300 && !result.has(qNum)) {
+      result.set(qNum, ans);
+    }
+  }
+
+  return result;
+}
+
 export function parsePositionedQuestionLines(lines: PositionedLine[]) {
   const questions: ExtractedQuestion[] = [];
   const warnings: string[] = [];
@@ -205,6 +240,7 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
   let previousLabel: number | null = null;
   let rejectedCandidates = 0;
   let inAnswerKey = false;
+  const answerKeyLines: string[] = [];
   const matchingOptions = new Map<string, string[]>();
   let pending: {
     label: string;
@@ -296,6 +332,7 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
       flush();
       inAnswerKey = true;
       pendingContext = [];
+      answerKeyLines.push(line.text);
       continue;
     }
     const heading = sectionTitle(line.text);
@@ -307,7 +344,10 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
       inAnswerKey = false;
       continue;
     }
-    if (inAnswerKey) continue;
+    if (inAnswerKey) {
+      answerKeyLines.push(line.text);
+      continue;
+    }
     const match = matchQuestion(line.text);
     if (match) {
       flush();
@@ -351,6 +391,28 @@ export function parsePositionedQuestionLines(lines: PositionedLine[]) {
     ];
     if (question.reviewFlags.includes("COMPLEX_LAYOUT"))
       question.reviewFlags.push("LOW_CONFIDENCE");
+  }
+
+  // Answer Key Cross-Matching
+  const answerMap = parseAnswerKeyGrid(answerKeyLines);
+  let matchedAnswers = 0;
+  if (answerMap.size > 0) {
+    for (const question of questions) {
+      const qNum = Number(question.sourceLabel) || question.position;
+      if (answerMap.has(qNum)) {
+        const targetAns = answerMap.get(qNum)!;
+        question.answer = targetAns;
+        question.recognitionConfidence = Math.max(question.recognitionConfidence, 0.96);
+        question.reviewFlags = [
+          ...question.reviewFlags.filter((f) => f !== "LOW_CONFIDENCE" && f !== "NO_ANSWER"),
+          "ANSWER_KEY_MATCHED",
+        ];
+        matchedAnswers += 1;
+      }
+    }
+    if (matchedAnswers > 0) {
+      warnings.push(`Đã tự động trích xuất và đối chiếu bảng đáp án ở cuối đề cho ${matchedAnswers} câu hỏi.`);
+    }
   }
 
   if (rejectedCandidates)

@@ -99,4 +99,15 @@ describe("layout-aware question parser", () => {
     ]);
     expect(result.questions[0].reviewFlags).toContain("MATCHING_CONVERTED");
   });
+
+  it("extracts and matches answer keys onto corresponding questions", () => {
+    const result = parseQuestionTextLayout(
+      "Bài 1. Chọn đáp án đúng\n1. She likes music. A.yes B.no C.maybe D.never\n2. I am a student. A.is B.am C.are D.be\nĐÁP ÁN\n1. A  2. B",
+    );
+    expect(result.questions).toHaveLength(2);
+    expect(result.questions[0].answer).toBe("A");
+    expect(result.questions[1].answer).toBe("B");
+    expect(result.questions[0].reviewFlags).toContain("ANSWER_KEY_MATCHED");
+    expect(result.warnings.some((w) => w.includes("bảng đáp án"))).toBe(true);
+  });
 });

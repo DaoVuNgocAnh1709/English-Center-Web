@@ -139,15 +139,30 @@ async function parseWorkbook(buffer: Buffer) {
   const totalRows = workbook.worksheets.reduce((sum, item) => sum + item.rowCount, 0);
   if (totalRows > maxRows)
     throw new BadRequestException(`Excel chỉ được tối đa ${maxRows.toLocaleString("vi-VN")} dòng.`);
-  const sheet = workbook.worksheets[0];
+
+  // Find sheet containing question content (supporting template with Guide sheet)
+  let sheet = workbook.worksheets[0];
+  let headers = new Map<string, number>();
+  for (const ws of workbook.worksheets) {
+    const wsHeaders = new Map<string, number>();
+    ws.getRow(1).eachCell((cell, col) => wsHeaders.set(header(cellText(cell.value)), col));
+    if (["nội dung", "noi dung", "question content", "content"].some((n) => wsHeaders.has(n))) {
+      sheet = ws;
+      headers = wsHeaders;
+      break;
+    }
+  }
   if (!sheet) throw new BadRequestException("File Excel không có trang dữ liệu.");
-  const headers = new Map<string, number>();
-  sheet.getRow(1).eachCell((cell, col) => headers.set(header(cellText(cell.value)), col));
+  if (headers.size === 0) {
+    sheet.getRow(1).eachCell((cell, col) => headers.set(header(cellText(cell.value)), col));
+  }
+
   const find = (...names: string[]) => names.map((name) => headers.get(name)).find(Boolean);
   const columns = {
     position: find("câu", "cau", "stt", "question"),
     kind: find("loại", "loai", "type"),
     content: find("nội dung", "noi dung", "question content", "content"),
+    image: find("hình ảnh", "hinh anh", "ảnh", "anh", "image", "image url"),
     answer: find("đáp án", "dap an", "answer"),
     points: find("điểm", "diem", "points"),
     section: find("phần", "phan", "section"),
@@ -158,8 +173,12 @@ async function parseWorkbook(buffer: Buffer) {
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
     const get = (col?: number) => col ? clean(cellText(row.getCell(col).value)) : "";
-    const content = get(columns.content);
-    if (!content) return;
+    const rawContent = get(columns.content);
+    if (!rawContent) return;
+    const imageUrl = get(columns.image);
+    const content = imageUrl && /^https?:\/\//i.test(imageUrl) && !rawContent.includes(imageUrl)
+      ? `${rawContent}\n\n![Hình minh họa](${imageUrl})`
+      : rawContent;
     const options = columns.options.map((col, index) => {
       const value = get(col);
       return value ? `${String.fromCharCode(65 + index)}. ${value}` : "";
@@ -334,23 +353,58 @@ export async function extractPdfWithOcr(
 
 export async function createExamTemplate() {
   const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet("Cau hoi");
+  workbook.creator = "Bright Path English Center";
+  workbook.created = new Date();
+
+  // Sheet 1: Hướng Dẫn
+  const guideSheet = workbook.addWorksheet("Hướng dẫn sử dụng", {
+    views: [{ showGridLines: true }],
+  });
+  guideSheet.columns = [
+    { header: "Cột", key: "col", width: 16 },
+    { header: "Quy định", key: "rule", width: 30 },
+    { header: "Mô tả chi tiết & Ví dụ", key: "desc", width: 60 },
+  ];
+  guideSheet.addRow({ col: "Câu", rule: "Số thứ tự hoặc nhãn", desc: "Ví dụ: 1, 2, 3 hoặc Câu 1, Question 1" });
+  guideSheet.addRow({ col: "Loại", rule: "Trắc nghiệm / Tự luận / Điền từ", desc: "Trắc nghiệm, Đúng/Sai, Trả lời ngắn, Tự luận" });
+  guideSheet.addRow({ col: "Phần", rule: "Tùy chọn (Chủ đề / Kỹ năng)", desc: "Ví dụ: Phonetics, Vocabulary, Reading, Writing" });
+  guideSheet.addRow({ col: "Nội dung", rule: "BẮT BUỘC", desc: "Nội dung câu hỏi. Hỗ trợ gạch chân __từ cần gạch__" });
+  guideSheet.addRow({ col: "Hình ảnh", rule: "Tùy chọn (Link ảnh)", desc: "Dán link ảnh (https://...) nếu câu hỏi có hình minh họa" });
+  guideSheet.addRow({ col: "A, B, C, D", rule: "Phương án trắc nghiệm", desc: "Nội dung phương án (không cần gõ lại tiền tố A., B.)" });
+  guideSheet.addRow({ col: "Đáp án", rule: "Đáp án đúng", desc: "Ví dụ: A (với trắc nghiệm) hoặc từ/cụm từ (với điền từ)" });
+  guideSheet.addRow({ col: "Điểm", rule: "Số điểm (Mặc định 1)", desc: "Số điểm cho câu hỏi, ví dụ: 1, 0.5, 2" });
+
+  guideSheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
+  guideSheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF092B4C" } };
+  guideSheet.getRow(1).height = 24;
+
+  // Sheet 2: Câu hỏi (Dữ liệu nhập)
+  const sheet = workbook.addWorksheet("Cau hoi", {
+    views: [{ state: "frozen", ySplit: 1, showGridLines: true }],
+  });
   sheet.columns = [
     { header: "Câu", key: "position", width: 8 },
-    { header: "Loại", key: "kind", width: 18 },
-    { header: "Nội dung", key: "content", width: 52 },
-    { header: "A", key: "a", width: 24 },
-    { header: "B", key: "b", width: 24 },
-    { header: "C", key: "c", width: 24 },
-    { header: "D", key: "d", width: 24 },
+    { header: "Loại", key: "kind", width: 16 },
+    { header: "Phần", key: "section", width: 20 },
+    { header: "Nội dung", key: "content", width: 50 },
+    { header: "Hình ảnh", key: "image", width: 25 },
+    { header: "A", key: "a", width: 22 },
+    { header: "B", key: "b", width: 22 },
+    { header: "C", key: "c", width: 22 },
+    { header: "D", key: "d", width: 22 },
     { header: "Đáp án", key: "answer", width: 12 },
     { header: "Điểm", key: "points", width: 10 },
-    { header: "Phần", key: "section", width: 24 },
   ];
-  sheet.addRow({ position: 1, kind: "Trắc nghiệm", content: "Choose the correct answer.", a: "Option one", b: "Option two", c: "Option three", d: "Option four", answer: "B", points: 1, section: "Vocabulary" });
-  sheet.addRow({ position: 2, kind: "Trả lời ngắn", content: "Complete the sentence.", answer: "sample answer", points: 1, section: "Writing" });
-  sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+
+  sheet.addRow({ position: 1, kind: "Trắc nghiệm", section: "Phonetics", content: "Choose the word whose underlined part is pronounced differently.", image: "", a: "m__a__p", b: "f__a__ther", c: "c__a__t", d: "h__a__t", answer: "B", points: 1 });
+  sheet.addRow({ position: 2, kind: "Trắc nghiệm", section: "Vocabulary", content: "She is very interested _____ learning foreign languages.", image: "", a: "in", b: "at", c: "on", d: "for", answer: "A", points: 1 });
+  sheet.addRow({ position: 3, kind: "Trắc nghiệm", section: "Grammar", content: "If it rains tomorrow, we _____ the picnic.", image: "", a: "cancel", b: "will cancel", c: "cancelled", d: "would cancel", answer: "B", points: 1 });
+  sheet.addRow({ position: 4, kind: "Trả lời ngắn", section: "Sentence rewrite", content: "Rewrite the sentence: 'He started learning English 5 years ago.' -> He has ____________________", image: "", a: "", b: "", c: "", d: "", answer: "been learning English for 5 years", points: 2 });
+  sheet.addRow({ position: 5, kind: "Trắc nghiệm", section: "Signs & Notices", content: "What does this traffic sign mean?", image: "https://images.unsplash.com/photo-1572953109213-3be62398eb95?w=500", a: "No parking", b: "No entry", c: "Speed limit 50", d: "Pedestrian crossing", answer: "B", points: 1 });
+
+  sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" }, size: 11 };
   sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF123D68" } };
-  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.getRow(1).height = 26;
+
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }

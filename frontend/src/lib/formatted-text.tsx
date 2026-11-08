@@ -1,7 +1,7 @@
 import React from "react";
 
 const tokenPattern =
-  /(__[^\s_](?:[^_\n]{0,78}?[^\s_])?__|<u>[\s\S]{1,120}?<\/u>|\*\*[^\s*](?:[^*\n]{0,120}?[^\s*])?\*\*|<(?:b|strong)>[\s\S]{1,120}?<\/(?:b|strong)>)/gi;
+  /(!\[[^\]]*\]\((?:https?:\/\/[^\s)]+|\/[^\s)]+)\)|__[^\s_](?:[^_\n]{0,78}?[^\s_])?__|<u>[\s\S]{1,120}?<\/u>|\*\*[^\s*](?:[^*\n]{0,120}?[^\s*])?\*\*|<(?:b|strong)>[\s\S]{1,120}?<\/(?:b|strong)>)/gi;
 
 export function renderFormattedText(text: string | null | undefined): React.ReactNode {
   if (!text) return "";
@@ -9,6 +9,33 @@ export function renderFormattedText(text: string | null | undefined): React.Reac
   if (parts.length === 1) return text;
   return parts.map((part, index) => {
     if (!part) return null;
+    const imgMatch = part.match(/^!\[(.*?)\]\((https?:\/\/[^\s)]+|\/[^\s)]+)\)$/i);
+    if (imgMatch) {
+      const alt = imgMatch[1] || "Hình minh họa câu hỏi";
+      const src = imgMatch[2];
+      return (
+        <span
+          key={index}
+          className="my-3 block overflow-hidden rounded-xl border border-slate-200 bg-slate-50 shadow-sm max-w-lg"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={alt}
+            loading="lazy"
+            className="max-h-80 w-auto rounded-lg object-contain mx-auto"
+            onError={(e) => {
+              (e.target as HTMLElement).style.display = "none";
+            }}
+          />
+          {alt && alt !== "Hình minh họa câu hỏi" && (
+            <span className="block px-3 py-1.5 text-center text-xs text-slate-500 italic bg-white/70 border-t border-slate-100">
+              {alt}
+            </span>
+          )}
+        </span>
+      );
+    }
     if (
       (part.startsWith("__") && part.endsWith("__") && part.length >= 5) ||
       (/^<u>[\s\S]+<\/u>$/i.test(part))
@@ -45,6 +72,7 @@ export function renderFormattedText(text: string | null | undefined): React.Reac
 export function stripFormattedText(text: string | null | undefined): string {
   if (!text) return "";
   return text
+    .replace(/!\[(.*?)\]\([^)]+\)/gi, "$1")
     .replace(/<\/?(?:u|b|strong|i|em)>/gi, "")
     .replace(/__(?![_\s])([^_\n]+?)(?<![_\s])__/g, "$1")
     .replace(/\*\*([^*]+?)\*\*/g, "$1");

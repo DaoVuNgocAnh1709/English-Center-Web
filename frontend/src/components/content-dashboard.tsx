@@ -7,9 +7,11 @@ import {
   BookOpen,
   CheckCircle2,
   ClipboardList,
+  Download,
   ExternalLink,
   FileCheck2,
   FileSearch,
+  FileSpreadsheet,
   Globe,
   GraduationCap,
   LayoutDashboard,
@@ -741,6 +743,25 @@ export function ContentDashboard({ role }: { role: Role }) {
                     <span>{storage.sources} đề nguồn · {storage.materials} tài liệu</span>
                   </div>
                 )}
+                <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-slate-50 p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#123d68] text-white">
+                      <FileSpreadsheet className="size-5" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-[#092b4c]">Mẫu Excel nhập đề thi chuẩn hóa</p>
+                      <p className="text-xs text-slate-500">Gồm sheet hướng dẫn chi tiết, 5 câu mẫu (ngữ âm, từ vựng, ngữ pháp, viết lại câu, hình ảnh) và khớp đáp án 100%.</p>
+                    </div>
+                  </div>
+                  <a
+                    href={`${api}/staff/content/exam-template`}
+                    download="mau-nhap-de-thi.xlsx"
+                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 text-xs font-bold text-[#123d68] shadow-sm border border-blue-200 transition hover:bg-blue-50 shrink-0"
+                  >
+                    <Download className="size-4" />
+                    Tải file mẫu Excel (.xlsx)
+                  </a>
+                </div>
                 <form
                   onSubmit={sourceUpload}
                   className="mt-5 flex flex-wrap items-end gap-3"
@@ -2635,7 +2656,7 @@ function AnswerEditor({
               <Field name="answer" label="Đáp án" placeholder="A hoặc nội dung đáp án" />
             )}
             <label className="text-sm font-semibold sm:col-span-2">
-              Nội dung câu hỏi
+              Nội dung câu hỏi (dùng __chữ__ để gạch chân, ![mô tả](link-ảnh) để chèn ảnh)
               <textarea name="content" required className="field-control mt-2 min-h-24 p-3" />
             </label>
             <label className="text-sm font-semibold sm:col-span-2">
@@ -2876,7 +2897,7 @@ function QuestionReviewCard({
             </label>
           )}
           <label className="text-xs font-semibold md:col-span-3">
-            Nội dung câu hỏi (dùng __chữ__ để gạch chân âm tiết/từ cần sửa)
+            Nội dung câu hỏi (dùng __chữ__ để gạch chân âm tiết/từ cần sửa, ![mô tả](link-ảnh) để chèn ảnh)
             <textarea name="content" defaultValue={question.content || ""} required className="field-control mt-1 min-h-20 p-2 text-sm" />
           </label>
           <label className="text-xs font-semibold md:col-span-3">

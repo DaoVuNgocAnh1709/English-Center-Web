@@ -67,8 +67,9 @@ describe("question importer", () => {
       mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     expect(imported.extension).toBe("xlsx");
-    expect(imported.questions).toHaveLength(2);
+    expect(imported.questions).toHaveLength(5);
     expect(imported.questions[0]).toMatchObject({ answer: "B", points: 1 });
+    expect(imported.questions[4].content).toContain("![Hình minh họa]");
   });
 
   it("runs local OCR for a PNG exam", async () => {
