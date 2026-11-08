@@ -51,6 +51,7 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
           script_stop: true
+          command_timeout: 30m
           script: |
             echo "🚀 [Deploy] Starting Production Deployment..."
             cd /opt/english-center
@@ -60,7 +61,7 @@ jobs:
             git reset --hard origin/prod
 
             echo "🐳 [Deploy] Building & restarting Docker containers..."
-            docker compose -f compose.yaml -f compose.production.yaml up -d --build --remove-orphans
+            DOCKER_BUILDKIT=1 docker compose -f compose.yaml -f compose.production.yaml up -d --build --remove-orphans
 
             echo "⏳ [Deploy] Waiting for backend container to be healthy..."
             for i in $(seq 1 18); do
