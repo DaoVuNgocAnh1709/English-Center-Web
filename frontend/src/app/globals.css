@@ -54,10 +54,10 @@ p, li, dd { text-wrap: pretty; }
 .surface-panel { border-radius: 14px; background: #fff; box-shadow: var(--shadow-card); }
 .surface-inset { border-radius: 12px; background: var(--surface); }
 
-.workspace-shell { min-height: 100vh; background: var(--surface); }
+.workspace-shell { min-height: 100vh; overflow-x: clip; background: var(--surface); }
 .workspace-sidebar { background: #082c50; color: #fff; }
 .workspace-main { min-width: 0; flex: 1; }
-.workspace-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 24px; border-bottom: 1px solid #dce4ec; }
+.workspace-topbar { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px 24px; padding-bottom: 24px; border-bottom: 1px solid #dce4ec; }
 .workspace-title { color: var(--brand-blue-dark); font-size: clamp(26px, 3vw, 36px); font-weight: 800; letter-spacing: -.025em; line-height: 1.16; }
 .workspace-subtitle { margin-top: 8px; max-width: 62ch; color: #627087; font-size: 14px; line-height: 1.65; }
 .workspace-panel { border-radius: 14px; background: #fff; box-shadow: var(--shadow-card); }

@@ -6,16 +6,21 @@ import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  CircleHelp,
   ClipboardList,
   Download,
   ExternalLink,
   FileCheck2,
   FileSearch,
   FileSpreadsheet,
+  FolderOpen,
   Globe,
   GraduationCap,
   LayoutDashboard,
   LogOut,
+  Plus,
+  Search,
+  Upload,
   UserRoundCheck,
   Users,
 } from "lucide-react";
@@ -26,6 +31,10 @@ import {
   schoolLevels,
 } from "@/lib/content-options";
 import { Modal } from "@/components/modal";
+import {
+  WorkspaceGuidedTour,
+  type GuidedTourStep,
+} from "@/components/workspace-guided-tour";
 import { apiFetch } from "@/lib/api-client";
 import { safeExternalUrl } from "@/lib/safe-url";
 import {
@@ -328,6 +337,19 @@ export function ContentDashboard({ role }: { role: Role }) {
   const [attemptStatusFilter, setAttemptStatusFilter] = useState<"ALL" | "SUBMITTED" | "GRADED" | "DRAFT">("ALL");
   const [analyticsExamId, setAnalyticsExamId] = useState<string>("ALL");
   const [selectedSourceId, setSelectedSourceId] = useState("");
+  const [tourOpen, setTourOpen] = useState(false);
+  const [sourceModalOpen, setSourceModalOpen] = useState(false);
+  const [createExamModalOpen, setCreateExamModalOpen] = useState(false);
+  const [examSearch, setExamSearch] = useState("");
+  const [examStatusFilter, setExamStatusFilter] = useState<"ALL" | "PUBLISHED" | "REVIEW" | "DRAFT">("ALL");
+  const [materialModalOpen, setMaterialModalOpen] = useState(false);
+  const [materialModalMode, setMaterialModalMode] = useState<"FILE" | "DRIVE">("FILE");
+  const [materialSearch, setMaterialSearch] = useState("");
+  const [materialCategoryFilter, setMaterialCategoryFilter] = useState("ALL");
+  const [courseModalOpen, setCourseModalOpen] = useState(false);
+  const [userEnrollModalOpen, setUserEnrollModalOpen] = useState(false);
+  const [userEnrollModalMode, setUserEnrollModalMode] = useState<"CREATE_USER" | "ENROLL">("CREATE_USER");
+  const [lessonModalCourseId, setLessonModalCourseId] = useState<string | null>(null);
   const uploadLock = useRef(false);
   const selectedSource = sources.find((source) => source.id === selectedSourceId);
 
@@ -456,8 +478,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã tạo bản nháp. Hệ thống đang chuyển nội dung thành câu hỏi web trong nền.",
       )
-    )
+    ) {
       form.reset();
+      setCreateExamModalOpen(false);
+    }
   }
   async function createMaterial(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -471,8 +495,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã tải tài liệu. Gửi duyệt để admin xuất bản.",
       )
-    )
+    ) {
       form.reset();
+      setMaterialModalOpen(false);
+    }
   }
   async function createDriveLink(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -489,8 +515,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã lưu liên kết Drive ở bản nháp.",
       )
-    )
+    ) {
       form.reset();
+      setMaterialModalOpen(false);
+    }
   }
   async function patch(path: string, data: object, message: string) {
     await action(
@@ -523,8 +551,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã tạo khóa học mới.",
       )
-    )
+    ) {
       form.reset();
+      setCourseModalOpen(false);
+    }
   }
   async function addCourseLesson(
     courseId: string,
@@ -543,8 +573,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã thêm bài học vào khóa học.",
       )
-    )
+    ) {
       form.reset();
+      setLessonModalCourseId(null);
+    }
   }
   async function createAdminUser(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -560,8 +592,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã tạo tài khoản thành công.",
       )
-    )
+    ) {
       form.reset();
+      setUserEnrollModalOpen(false);
+    }
   }
   async function enrollStudent(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -577,8 +611,10 @@ export function ContentDashboard({ role }: { role: Role }) {
           }),
         "Đã ghi danh/cập nhật tiến độ học viên.",
       )
-    )
+    ) {
       form.reset();
+      setUserEnrollModalOpen(false);
+    }
   }
   const nav = [
     ["overview", "Tổng quan", LayoutDashboard],
@@ -614,6 +650,93 @@ export function ContentDashboard({ role }: { role: Role }) {
       ? (scoredScale10List.reduce((sum, val) => sum + val, 0) / scoredScale10List.length).toFixed(1)
       : "—";
   const activeStudentCount = students.filter((student) => student.examAttempts.length > 0).length;
+  const tourSteps: GuidedTourStep[] = [
+    {
+      id: "sidebar",
+      target: "tour-sidebar-nav",
+      tab: "overview",
+      illustration: "sidebar",
+      title: "Điều hướng không gian làm việc",
+      description:
+        "Chuyển đổi nhanh giữa bảng Tổng quan, Học viên, Luyện đề, Bài làm và Thư viện tài liệu tại thanh menu bên trái.",
+    },
+    {
+      id: "overview-kpis",
+      target: "tour-overview-kpis",
+      tab: "overview",
+      illustration: "overview",
+      title: "Bảng chỉ số hoạt động trung tâm",
+      description:
+        "Theo dõi tức thì tổng số đề luyện tập, số bài chờ chấm tay, điểm trung bình thang 10 và tỷ lệ học viên đang hoạt động.",
+    },
+    {
+      id: "students-analytics",
+      target: "tour-students-panel",
+      tab: "students",
+      illustration: "students",
+      title: "Hồ sơ năng lực Học viên 360°",
+      description:
+        "Tìm nhanh học viên theo tên/email, lọc nhóm cần chấm bài và bấm 'Xem chi tiết' để mở biểu đồ phân tích 7 kỹ năng.",
+    },
+    {
+      id: "exam-sources",
+      target: "tour-exam-sources-btn",
+      tab: "exams",
+      illustration: "sources",
+      title: "Kho tệp nguồn & Mẫu Excel chuẩn",
+      description:
+        "Toàn bộ thao tác tải tệp PDF, Word, Excel hoặc tải file mẫu .xlsx đã được gom gọn vào hộp thoại này để trang không bị kéo dài.",
+    },
+    {
+      id: "exam-create",
+      target: "tour-exam-create-btn",
+      tab: "exams",
+      illustration: "create-exam",
+      title: "Tạo đề luyện tập qua Hộp thoại",
+      description:
+        "Nhấn nút này để mở hộp thoại chọn tệp nguồn, cấu hình thời gian làm bài và tự động bóc tách câu hỏi + đáp án.",
+    },
+    {
+      id: "exam-list",
+      target: "tour-exam-list",
+      tab: "exams",
+      illustration: "exam-list",
+      title: "Rà soát & Duyệt câu hỏi ngay đầu trang",
+      description:
+        "Danh sách đề hiển thị ngay lập tức kèm bộ lọc tìm kiếm. Nhấn 'Duyệt câu hỏi' để kiểm tra đáp án hoặc xuất bản.",
+    },
+    {
+      id: "attempts-analytics",
+      target: "tour-attempts-panel",
+      tab: "attempts",
+      illustration: "attempts",
+      title: "Phân tích câu sai & Chấm bài",
+      description:
+        "Lọc bài làm theo từng đề thi, xem Top các câu hỏi học viên sai nhiều nhất để chữa bài trên lớp và chấm điểm phần tự luận.",
+    },
+    {
+      id: "materials-modal",
+      target: "tour-materials-create-btn",
+      tab: "materials",
+      illustration: "materials",
+      title: "Đăng tài liệu gọn gàng & Xem lại hướng dẫn",
+      description:
+        "Tải tài liệu PDF/DOCX hoặc gắn link Google Drive trong hộp thoại 2 ngăn. Bạn luôn có thể nhấn nút (?) ở góc dưới thanh bên trái để mở lại hướng dẫn này!",
+    },
+  ];
+
+  const startGuidedTour = () => {
+    setSourceModalOpen(false);
+    setCreateExamModalOpen(false);
+    setMaterialModalOpen(false);
+    setCourseModalOpen(false);
+    setUserEnrollModalOpen(false);
+    setLessonModalCourseId(null);
+    setSelectedExam(null);
+    setSelectedAttempt(null);
+    setSelectedStudentId(null);
+    setTourOpen(true);
+  };
 
   return (
     <div className="workspace-shell">
@@ -643,6 +766,7 @@ export function ContentDashboard({ role }: { role: Role }) {
           <ExternalLink size={13} className="text-white/60" />
         </button>
         <nav
+          data-tour="tour-sidebar-nav"
           className="mt-4 grid grid-cols-2 gap-2 lg:block"
           aria-label="Chức năng quản trị"
         >
@@ -661,28 +785,51 @@ export function ContentDashboard({ role }: { role: Role }) {
             </button>
           ))}
         </nav>
-        <button
-          onClick={async () => {
-            if (typeof window !== "undefined") {
-              window.sessionStorage.removeItem("bp_allow_public_view");
-            }
-            await fetch(`${api}/auth/logout`, {
-              method: "POST",
-              credentials: "include",
-            });
-            router.replace("/dang-nhap");
-          }}
-          className="mt-6 flex min-h-11 items-center gap-2 rounded-xl px-4 text-sm font-semibold text-white/65 hover:bg-white/[.06] hover:text-white lg:absolute lg:bottom-5 lg:left-5 lg:right-5"
-        >
-          <LogOut size={17} />
-          Đăng xuất
-        </button>
+        <div className="mt-6 flex items-center justify-between gap-2 border-t border-white/10 pt-4 lg:absolute lg:bottom-4 lg:left-5 lg:right-5 lg:mt-0">
+          <button
+            type="button"
+            data-tour="tour-help-trigger"
+            onClick={startGuidedTour}
+            title="Hướng dẫn sử dụng (Spotlight Tour)"
+            aria-label="Hướng dẫn sử dụng"
+            className="flex min-h-10 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white transition hover:border-purple-400/50 hover:bg-purple-500/25"
+          >
+            <CircleHelp size={17} className="text-purple-200" />
+            <span>Hướng dẫn</span>
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              if (typeof window !== "undefined") {
+                window.sessionStorage.removeItem("bp_allow_public_view");
+              }
+              await fetch(`${api}/auth/logout`, {
+                method: "POST",
+                credentials: "include",
+              });
+              router.replace("/dang-nhap");
+            }}
+            className="flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/[.08] hover:text-white"
+          >
+            <LogOut size={16} />
+            <span>Đăng xuất</span>
+          </button>
+        </div>
       </aside>
       <div className="workspace-main px-5 py-7 md:px-10 md:py-9">
         <div className="mx-auto max-w-6xl">
           <div className="workspace-topbar mb-7">
             <div><h1 className="workspace-title">{nav.find((item) => item[0] === tab)?.[1]}</h1><p className="workspace-subtitle">{tab === "overview" ? "Theo dõi nội dung, học viên và các việc cần xử lý trong một nơi." : tab === "students" ? "Tra cứu từng học viên, số đề đã luyện, phân tích điểm mạnh yếu và lịch sử làm bài." : tab === "exams" ? "Tạo đề từ PDF, rà soát câu hỏi và quản lý trạng thái xuất bản." : tab === "attempts" ? "Theo dõi tiến độ, kết quả tự động và các câu đang chờ chấm tay." : tab === "materials" ? "Tổ chức học liệu theo cấp học, danh mục và trạng thái duyệt." : "Xử lý thông tin mới và cập nhật trạng thái liên hệ."}</p></div>
-            <div className="flex items-center gap-3 shrink-0">
+            <div className="flex items-center gap-2.5 shrink-0">
+              <button
+                type="button"
+                onClick={startGuidedTour}
+                title="Mở hướng dẫn sử dụng từng bước"
+                className="btn-outline inline-flex min-h-9 items-center gap-1.5 px-3 text-xs font-bold text-[#123d68]"
+              >
+                <CircleHelp size={15} />
+                <span>Hướng dẫn (?)</span>
+              </button>
               <button
                 type="button"
                 onClick={goToPublicSite}
@@ -691,7 +838,7 @@ export function ContentDashboard({ role }: { role: Role }) {
                 <Globe size={14} />
                 <span>Xem trang chủ</span>
               </button>
-              <span className="status-dot rounded-full bg-white px-4 py-2 text-xs font-bold text-emerald-700 shadow-sm">Hệ thống hoạt động</span>
+              <span className="status-dot hidden md:inline-flex rounded-full bg-white px-4 py-2 text-xs font-bold text-emerald-700 shadow-sm">Hệ thống hoạt động</span>
             </div>
           </div>
           {notice && (
@@ -712,7 +859,7 @@ export function ContentDashboard({ role }: { role: Role }) {
           )}
           {tab === "overview" && (
             <div className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <div data-tour="tour-overview-kpis" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 <Summary
                   value={exams.length}
                   label="Đề luyện tập"
@@ -1049,419 +1196,781 @@ export function ContentDashboard({ role }: { role: Role }) {
             </div>
           )}
           {tab === "students" && (
-            <StudentsAnalyticsView
-              students={students}
-              attempts={attempts}
-              search={studentSearch}
-              onSearchChange={setStudentSearch}
-              filterMode={studentFilterMode}
-              onFilterModeChange={setStudentFilterMode}
-              onSelectStudent={(id) => setSelectedStudentId(id)}
-              onSelectAttempt={(id) => setSelectedAttempt(id)}
-            />
+            <div data-tour="tour-students-panel">
+              <StudentsAnalyticsView
+                students={students}
+                attempts={attempts}
+                search={studentSearch}
+                onSearchChange={setStudentSearch}
+                filterMode={studentFilterMode}
+                onFilterModeChange={setStudentFilterMode}
+                onSelectStudent={(id) => setSelectedStudentId(id)}
+                onSelectAttempt={(id) => setSelectedAttempt(id)}
+              />
+            </div>
           )}
           {tab === "exams" && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               <div className="soft-card p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  1. Tải tệp đề nguồn một lần
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Nhận PDF, DOCX, Excel mẫu, JPG và PNG. Có thể chọn nhiều ảnh để ghép thành một đề. Tệp được quét mã độc và xử lý nền; tối đa 15 MB/tệp, 50 MB/lượt ảnh.
-                </p>
-                {storage && (
-                  <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600" aria-label="Dung lượng kho tệp">
-                    <strong className="text-[#092b4c]">Kho tệp</strong>
-                    <span>{(storage.usedBytes / 1024 / 1024).toFixed(1)} MB / {(storage.quotaBytes / 1024 / 1024 / 1024).toFixed(1)} GB</span>
-                    <span>{storage.sources} đề nguồn · {storage.materials} tài liệu</span>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-[#092b4c]">
+                      Quản lý Đề luyện tập & Kho tệp nguồn
+                    </h2>
+                    <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                      Danh sách đề thi được ưu tiên hiển thị ngay đầu trang. Nhấn nút bên phải để mở hộp thoại tải tệp nguồn (PDF, Word, Excel, Ảnh) hoặc tạo đề luyện tập mới.
+                    </p>
+                    {storage && (
+                      <div
+                        className="mt-3 inline-flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl bg-slate-100 px-3 py-1.5 text-xs text-slate-600"
+                        aria-label="Dung lượng kho tệp"
+                      >
+                        <strong className="text-[#092b4c]">Kho tệp:</strong>
+                        <span>
+                          {(storage.usedBytes / 1024 / 1024).toFixed(1)} MB /{" "}
+                          {(storage.quotaBytes / 1024 / 1024 / 1024).toFixed(1)} GB
+                        </span>
+                        <span>·</span>
+                        <span>
+                          {sources.filter((s) => s.status === "READY").length}/{sources.length} tệp sẵn sàng
+                        </span>
+                      </div>
+                    )}
                   </div>
-                )}
-                <div className="mt-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-slate-50 p-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#123d68] text-white">
-                      <FileSpreadsheet className="size-5" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-bold text-[#092b4c]">Mẫu Excel nhập đề thi chuẩn hóa</p>
-                      <p className="text-xs text-slate-500">Gồm sheet hướng dẫn chi tiết, 5 câu mẫu (ngữ âm, từ vựng, ngữ pháp, viết lại câu, hình ảnh) và khớp đáp án 100%.</p>
-                    </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      data-tour="tour-exam-sources-btn"
+                      onClick={() => setSourceModalOpen(true)}
+                      className="btn-outline inline-flex min-h-10 items-center gap-2 px-4 text-xs font-bold"
+                    >
+                      <FolderOpen size={16} />
+                      <span>Kho tệp nguồn ({sources.length})</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-tour="tour-exam-create-btn"
+                      onClick={() => setCreateExamModalOpen(true)}
+                      className="btn-primary inline-flex min-h-10 items-center gap-2 px-4 text-xs font-bold"
+                    >
+                      <Plus size={16} />
+                      <span>Tạo đề luyện tập mới</span>
+                    </button>
                   </div>
+                </div>
+
+                <div className="mt-5 grid gap-3 border-t border-slate-100 pt-5 sm:grid-cols-2 lg:grid-cols-[1fr_auto]">
+                  <label className="relative block">
+                    <span className="sr-only">Tìm kiếm đề luyện tập</span>
+                    <Search
+                      size={16}
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                    />
+                    <input
+                      value={examSearch}
+                      onChange={(event) => setExamSearch(event.target.value)}
+                      placeholder="Tìm nhanh theo tên đề, khối lớp hoặc tên tệp nguồn..."
+                      className="field-control pl-10 pr-3 py-2.5 text-sm"
+                    />
+                  </label>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(
+                      [
+                        ["ALL", `Tất cả (${exams.length})`],
+                        [
+                          "PUBLISHED",
+                          `Đã xuất bản (${exams.filter((e) => e.status === "PUBLISHED").length})`,
+                        ],
+                        [
+                          "REVIEW",
+                          `Chờ duyệt (${exams.filter((e) => e.status === "REVIEW").length})`,
+                        ],
+                        [
+                          "DRAFT",
+                          `Bản nháp (${exams.filter((e) => e.status === "DRAFT").length})`,
+                        ],
+                      ] as const
+                    ).map(([statusKey, label]) => (
+                      <button
+                        key={statusKey}
+                        type="button"
+                        onClick={() => setExamStatusFilter(statusKey)}
+                        className={`rounded-xl px-3 py-2 text-xs font-bold transition-colors ${
+                          examStatusFilter === statusKey
+                            ? "bg-[#123d68] text-white"
+                            : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div data-tour="tour-exam-list" className="soft-card p-6">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="text-lg font-bold text-[#092b4c]">
+                    Danh sách đề luyện tập ({exams.length})
+                  </h2>
                   <a
                     href={`${api}/staff/content/exam-template`}
                     download="mau-nhap-de-thi.xlsx"
-                    className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-4 py-2 text-xs font-bold text-[#123d68] shadow-sm border border-blue-200 transition hover:bg-blue-50 shrink-0"
+                    className="inline-flex items-center gap-1.5 text-xs font-bold text-[#123d68] hover:underline"
                   >
-                    <Download className="size-4" />
+                    <Download className="size-3.5" />
                     Tải file mẫu Excel (.xlsx)
                   </a>
                 </div>
-                <form
-                  onSubmit={sourceUpload}
-                  className="mt-5 flex flex-wrap items-end gap-3"
-                >
-                  <label className="min-w-72 text-sm font-semibold">
-                    <span className="block">Chọn tệp đề</span>
-                    <span className="field-control mt-2 flex min-h-12 items-center gap-3 p-2">
-                      <span className="rounded-lg bg-[#123d68] px-3 py-2 text-xs font-bold text-white">Chọn tệp</span>
-                      <span className="min-w-0 flex-1 truncate text-sm font-normal text-slate-600">
-                        {sourceFileNames.length === 0
-                          ? "Chưa chọn tệp"
-                          : sourceFileNames.length === 1
-                            ? sourceFileNames[0]
-                            : `${sourceFileNames.length} ảnh đã chọn`}
-                      </span>
-                    </span>
-                    <input
-                      type="file"
-                      name="file"
-                      accept=".pdf,.docx,.xlsx,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
-                      multiple
-                      required
-                      className="sr-only"
-                      onChange={(event) => setSourceFileNames(Array.from(event.target.files || []).map((file) => file.name))}
-                    />
-                  </label>
-                  <button disabled={busy} className="btn-primary disabled:cursor-not-allowed disabled:opacity-60">
-                    {busy ? "Đang tải lên..." : "Tải lên"}
-                  </button>
-                </form>
-                {sources.length > 0 && (
-                  <div className="mt-5 text-sm text-slate-600">
-                    {sources.map((source) => (
-                      <div
-                        key={source.id}
-                        className="border-t border-slate-100 py-3"
+                {!exams.length && (
+                  <div className="mt-4 rounded-xl border border-dashed border-slate-200 p-8 text-center">
+                    <p className="text-sm text-slate-500">Chưa có đề luyện tập nào.</p>
+                    <div className="mt-3 flex justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setSourceModalOpen(true)}
+                        className="btn-outline min-h-9 px-3 text-xs"
                       >
-                        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
-                          <span className="min-w-0 break-words font-semibold text-[#092b4c]">{source.fileName}</span>
-                          <span className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${source.status === "READY" ? "bg-emerald-50 text-emerald-700" : source.status === "FAILED" || source.status === "QUARANTINED" ? "bg-red-50 text-red-700" : "bg-blue-50 text-blue-700"}`}>
-                            {source.statusMessage || sourceStatusLabels[source.status]}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
-                          <span>{source.mimeType === "application/pdf" ? `${source.pageCount} trang` : "Nhập toàn bộ tệp"}</span>
-                          <span>{(source.sizeBytes / 1024 / 1024).toFixed(1)} MB</span>
-                        </div>
-                        {source.status !== "READY" && source.status !== "FAILED" && source.status !== "QUARANTINED" && (
-                          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-valuenow={source.progress} aria-valuemin={0} aria-valuemax={100} aria-label={`Tiến độ xử lý ${source.fileName}`}>
-                            <div className="h-full rounded-full bg-[#123d68] transition-[width] duration-500" style={{ width: `${source.progress}%` }} />
-                          </div>
-                        )}
-                        {source.lastError && <p className="mt-2 text-xs leading-5 text-red-700">{source.lastError}</p>}
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {(source.status === "FAILED" || source.status === "QUARANTINED") && (
-                            <button type="button" disabled={busy} className="text-xs font-bold text-[#123d68] underline underline-offset-4" onClick={() => action(() => request(`/staff/content/sources/${source.id}/retry`, { method: "POST" }), "Đã đưa tệp vào hàng đợi xử lý lại.")}>Thử lại</button>
-                          )}
-                          {source._count.exams === 0 ? (
-                            <button type="button" disabled={busy} className="text-xs font-bold text-red-700 underline underline-offset-4" onClick={() => { if (window.confirm(`Xóa tệp “${source.fileName}”? Thao tác này không thể hoàn tác.`)) void action(() => request(`/staff/content/sources/${source.id}`, { method: "DELETE" }), "Đã xóa tệp nguồn không còn sử dụng."); }}>Xóa tệp</button>
-                          ) : (
-                            <span className="text-xs text-slate-500">Đang dùng cho {source._count.exams} đề</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
+                        1. Tải tệp nguồn
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreateExamModalOpen(true)}
+                        className="btn-primary min-h-9 px-3 text-xs"
+                      >
+                        2. Tạo đề mới
+                      </button>
+                    </div>
                   </div>
                 )}
-              </div>
-              <div className="soft-card p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  2. Chuyển tệp thành câu hỏi web
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Hệ thống chuẩn hóa câu hỏi từ PDF, Word, Excel hoặc ảnh. Giáo
-                  viên vẫn rà soát nội dung và đáp án trước khi gửi duyệt.
-                </p>
-                <form
-                  onSubmit={createExam}
-                  className="mt-5 grid gap-4 md:grid-cols-2"
-                >
-                  <label className="text-sm font-semibold md:col-span-2">
-                    Tệp nguồn
-                    <select
-                      name="sourceId"
-                      required
-                      value={selectedSourceId}
-                      onChange={(event) => setSelectedSourceId(event.target.value)}
-                      className="field-control mt-2 p-3"
-                    >
-                      <option value="">Chọn file</option>
-                      {sources.filter((source) => source.status === "READY").map((source) => (
-                        <option key={source.id} value={source.id}>
-                          {source.fileName} ({source.mimeType === "application/pdf" ? `${source.pageCount} trang` : "toàn bộ tệp"})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <Field name="title" label="Tên đề" required />
-                  <Field name="summary" label="Mô tả" />
-                  <LevelFields />
-                  {selectedSource?.mimeType === "application/pdf" ? (
-                    <>
-                      <Field name="startPage" label="Từ trang" type="number" min="1" required />
-                      <Field name="endPage" label="Đến trang" type="number" min="1" required />
-                    </>
-                  ) : (
-                    <>
-                      <input type="hidden" name="startPage" value="1" />
-                      <input type="hidden" name="endPage" value="1" />
-                      <div className="surface-inset p-4 text-sm leading-6 text-slate-600 md:col-span-2">
-                        DOCX, Excel và ảnh được nhập toàn bộ. Với Excel, bạn có thể{" "}
-                        <a href={`${api}/staff/content/exam-template`} className="font-bold text-[#123d68] underline underline-offset-4">
-                          tải file mẫu tại đây
-                        </a>.
-                      </div>
-                    </>
-                  )}
-                  <label className="text-sm font-semibold">
-                    Thời gian làm bài
-                    <select
-                      name="durationMinutes"
-                      defaultValue="45"
-                      className="field-control mt-2 p-3"
-                    >
-                      {[15, 30, 45, 60, 90, 120].map((minutes) => (
-                        <option key={minutes} value={minutes}>
-                          {minutes} phút
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="text-sm font-semibold md:col-span-2">
-                    Đáp án hàng loạt (không bắt buộc)
-                    <textarea
-                      name="answerText"
-                      className="field-control mt-2 min-h-24 p-3"
-                      placeholder="1:D, 2:A, 3:C"
-                    />
-                  </label>
-                  <label className="flex items-start gap-3 rounded-xl bg-blue-50 p-4 text-sm md:col-span-2">
-                    <input
-                      type="checkbox"
-                      name="extractQuestions"
-                      defaultChecked
-                      className="mt-1 size-4 accent-[#0b3157]"
-                    />
-                    <span>
-                      <strong className="block text-[#092b4c]">
-                        Tự động chuyển tệp thành câu hỏi web
-                      </strong>
-                      <span className="mt-1 block leading-6 text-slate-600">
-                        PDF có lớp chữ và Excel mẫu cho kết quả tốt nhất. OCR từ
-                        ảnh hoặc PDF scan có thể cần sửa lại nhiều hơn.
-                      </span>
-                    </span>
-                  </label>
-                  <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm md:col-span-2">
-                    <input
-                      type="checkbox"
-                      name="showAnswers"
-                      defaultChecked
-                      className="mt-1 size-4 accent-[#0b3157]"
-                    />
-                    <span>
-                      <strong className="block text-[#092b4c]">
-                        Công bố đáp án chi tiết ngay sau khi học viên nộp bài
-                      </strong>
-                      <span className="mt-1 block leading-6 text-slate-600">
-                        Bỏ chọn nếu đây là kỳ thi/bài kiểm tra cần bảo mật đáp án. Bạn có thể bật công bố đáp án bất cứ lúc nào sau khi ca thi kết thúc.
-                      </span>
-                    </span>
-                  </label>
-                  <button
-                    disabled={busy || !sources.some((source) => source.status === "READY")}
-                    className="btn-primary w-fit md:col-span-2"
-                  >
-                    Tạo bản nháp
-                  </button>
-                </form>
-              </div>
-              <div className="soft-card p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  3. Kiểm tra và gửi duyệt
-                </h2>
-                {!exams.length && (
-                  <p className="mt-4 text-sm text-slate-500">Chưa có đề.</p>
-                )}
-                <div className="mt-4 space-y-3">
-                  {exams.map((exam) => (
-                    <article
-                      key={exam.id}
-                      className="rounded-xl border border-slate-200 p-4"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <h3 className="font-bold text-[#092b4c]">
-                            {exam.title}
-                          </h3>
-                          <p className="mt-1 text-xs text-slate-500">
-                            {gradeLabel(exam.grade)} · {exam.source.mimeType === "application/pdf" ? `Trang ${exam.startPage}–${exam.endPage}` : exam.source.fileName} · {exam.questions.length} câu web ·{" "}
-                            {statusLabels[exam.status]}
-                          </p>
-                          {exam.extractionStatus === "READY" && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <span
-                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                  exam.extractionProvider === "GEMINI"
-                                    ? "bg-emerald-50 text-emerald-700"
-                                    : exam.extractionProvider === "LOCAL_FALLBACK"
-                                      ? "bg-amber-50 text-amber-800"
-                                      : "bg-slate-100 text-slate-600"
-                                }`}
-                                title={
-                                  exam.extractionProvider === "GEMINI"
-                                    ? `${exam.aiModel || "Gemini"} · ${exam.aiInputTokens || 0} token vào · ${exam.aiOutputTokens || 0} token ra`
-                                    : exam.aiFallbackReason || undefined
+                {(() => {
+                  const q = examSearch.trim().toLocaleLowerCase("vi");
+                  const filteredExams = exams.filter((exam) => {
+                    if (examStatusFilter !== "ALL" && exam.status !== examStatusFilter)
+                      return false;
+                    if (q) {
+                      const titleMatch = exam.title.toLocaleLowerCase("vi").includes(q);
+                      const fileMatch = exam.source.fileName
+                        .toLocaleLowerCase("vi")
+                        .includes(q);
+                      const gradeMatch = gradeLabel(exam.grade)
+                        .toLocaleLowerCase("vi")
+                        .includes(q);
+                      if (!titleMatch && !fileMatch && !gradeMatch) return false;
+                    }
+                    return true;
+                  });
+                  return (
+                    <div className="mt-4 space-y-3">
+                      {filteredExams.map((exam) => (
+                        <article
+                          key={exam.id}
+                          className="rounded-xl border border-slate-200 p-4 transition hover:border-slate-300"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h3 className="font-bold text-[#092b4c]">
+                                {exam.title}
+                              </h3>
+                              <p className="mt-1 text-xs text-slate-500">
+                                {gradeLabel(exam.grade)} ·{" "}
+                                {exam.source.mimeType === "application/pdf"
+                                  ? `Trang ${exam.startPage}–${exam.endPage}`
+                                  : exam.source.fileName}{" "}
+                                · {exam.questions.length} câu web ·{" "}
+                                {statusLabels[exam.status]}
+                              </p>
+                              {exam.extractionStatus === "READY" && (
+                                <div className="mt-2 flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                      exam.extractionProvider === "GEMINI"
+                                        ? "bg-emerald-50 text-emerald-700"
+                                        : exam.extractionProvider === "LOCAL_FALLBACK"
+                                          ? "bg-amber-50 text-amber-800"
+                                          : "bg-slate-100 text-slate-600"
+                                    }`}
+                                    title={
+                                      exam.extractionProvider === "GEMINI"
+                                        ? `${exam.aiModel || "Gemini"} · ${exam.aiInputTokens || 0} token vào · ${exam.aiOutputTokens || 0} token ra`
+                                        : exam.aiFallbackReason || undefined
+                                    }
+                                  >
+                                    {exam.extractionProvider === "GEMINI"
+                                      ? "Gemini hỗ trợ"
+                                      : exam.extractionProvider === "LOCAL_FALLBACK"
+                                        ? "Dự phòng nội bộ"
+                                        : "Nhận diện nội bộ"}
+                                  </span>
+                                  <span
+                                    className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                      exam.showAnswers !== false
+                                        ? "bg-blue-50 text-blue-700"
+                                        : "bg-amber-50 text-amber-800"
+                                    }`}
+                                  >
+                                    {exam.showAnswers !== false
+                                      ? "Hiện đáp án sau nộp"
+                                      : "Đang ẩn đáp án"}
+                                  </span>
+                                </div>
+                              )}
+                              {exam.extractionStatus !== "READY" && (
+                                <p
+                                  className={`mt-2 text-xs font-bold ${
+                                    exam.extractionStatus === "FAILED"
+                                      ? "text-red-700"
+                                      : "text-blue-700"
+                                  }`}
+                                >
+                                  {exam.extractionStatus === "FAILED"
+                                    ? "Trích xuất lỗi — có thể thử lại hoặc nhập câu thủ công"
+                                    : `Đang xử lý câu hỏi · ${exam.extractionProgress}%`}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                              <a
+                                href={`${api}/staff/content/exams/${exam.id}/file`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn-outline min-h-9 px-3"
+                              >
+                                {exam.source.mimeType === "application/pdf"
+                                  ? "Xem PDF"
+                                  : "Mở tệp nguồn"}
+                              </a>
+                              <button
+                                disabled={
+                                  busy ||
+                                  exam.extractionStatus === "QUEUED" ||
+                                  exam.extractionStatus === "PROCESSING"
                                 }
+                                onClick={() => setSelectedExam(exam.id)}
+                                className="btn-outline min-h-9 px-3"
                               >
-                                {exam.extractionProvider === "GEMINI"
-                                  ? "Gemini hỗ trợ"
-                                  : exam.extractionProvider === "LOCAL_FALLBACK"
-                                    ? "Dự phòng nội bộ"
-                                    : "Nhận diện nội bộ"}
-                              </span>
-                              <span
-                                className={`inline-flex rounded-full px-2.5 py-1 text-[11px] font-bold ${
-                                  exam.showAnswers !== false
-                                    ? "bg-blue-50 text-blue-700"
-                                    : "bg-amber-50 text-amber-800"
-                                }`}
+                                Duyệt câu hỏi
+                              </button>
+                              <button
+                                disabled={busy}
+                                onClick={() =>
+                                  patch(
+                                    `/staff/content/exams/${exam.id}/answer-visibility`,
+                                    { showAnswers: exam.showAnswers === false },
+                                    exam.showAnswers === false
+                                      ? "Đã công bố đáp án chi tiết cho học viên."
+                                      : "Đã ẩn đáp án chi tiết đối với học viên.",
+                                  )
+                                }
+                                className="btn-outline min-h-9 px-3"
                               >
-                                {exam.showAnswers !== false
-                                  ? "Hiện đáp án sau nộp"
-                                  : "Đang ẩn đáp án"}
-                              </span>
+                                {exam.showAnswers === false
+                                  ? "Công bố đáp án"
+                                  : "Ẩn đáp án"}
+                              </button>
+                              {exam.status !== "PUBLISHED" && (
+                                <button
+                                  disabled={
+                                    busy ||
+                                    exam.extractionStatus === "QUEUED" ||
+                                    exam.extractionStatus === "PROCESSING"
+                                  }
+                                  onClick={() =>
+                                    action(
+                                      () =>
+                                        request(
+                                          `/staff/content/exams/${exam.id}/extract`,
+                                          { method: "POST" },
+                                        ),
+                                      "Đã đưa yêu cầu trích xuất lại vào hàng đợi nền.",
+                                    )
+                                  }
+                                  className="btn-outline min-h-9 px-3"
+                                >
+                                  Trích xuất lại
+                                </button>
+                              )}
+                              {exam.status !== "PUBLISHED" &&
+                                (role === "ADMIN" || exam.status === "DRAFT") && (
+                                  <button
+                                    disabled={
+                                      busy || exam.extractionStatus !== "READY"
+                                    }
+                                    onClick={() =>
+                                      patch(
+                                        `/staff/content/exams/${exam.id}/status`,
+                                        {
+                                          status:
+                                            role === "ADMIN"
+                                              ? "PUBLISHED"
+                                              : "REVIEW",
+                                        },
+                                        role === "ADMIN"
+                                          ? "Đã xuất bản đề."
+                                          : "Đã gửi đề chờ admin duyệt.",
+                                      )
+                                    }
+                                    className="btn-primary min-h-9 px-3"
+                                  >
+                                    {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
+                                  </button>
+                                )}
+                              {exam.status === "REVIEW" && (
+                                <button
+                                  disabled={busy}
+                                  onClick={() =>
+                                    patch(
+                                      `/staff/content/exams/${exam.id}/status`,
+                                      { status: "DRAFT" },
+                                      role === "ADMIN"
+                                        ? "Đã trả đề về bản nháp cho giáo viên chỉnh sửa."
+                                        : "Đã rút đề về bản nháp.",
+                                    )
+                                  }
+                                  className="btn-outline min-h-9 px-3"
+                                >
+                                  {role === "ADMIN"
+                                    ? "Trả về bản nháp"
+                                    : "Rút về bản nháp"}
+                                </button>
+                              )}
+                              {role === "ADMIN" && exam.status === "PUBLISHED" && (
+                                <button
+                                  onClick={() =>
+                                    patch(
+                                      `/staff/content/exams/${exam.id}/status`,
+                                      { status: "DRAFT" },
+                                      "Đã gỡ đề về bản nháp.",
+                                    )
+                                  }
+                                  className="btn-outline min-h-9 px-3"
+                                >
+                                  Gỡ đề
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          {(exam.extractionStatus === "QUEUED" ||
+                            exam.extractionStatus === "PROCESSING") && (
+                            <div
+                              className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100"
+                              role="progressbar"
+                              aria-label={`Tiến độ trích xuất ${exam.title}`}
+                              aria-valuemin={0}
+                              aria-valuemax={100}
+                              aria-valuenow={exam.extractionProgress}
+                            >
+                              <div
+                                className="h-full rounded-full bg-[#123d68] transition-[width] duration-500"
+                                style={{ width: `${exam.extractionProgress}%` }}
+                              />
                             </div>
                           )}
-                          {exam.extractionStatus !== "READY" && (
-                            <p className={`mt-2 text-xs font-bold ${exam.extractionStatus === "FAILED" ? "text-red-700" : "text-blue-700"}`}>
-                              {exam.extractionStatus === "FAILED"
-                                ? "Trích xuất lỗi — có thể thử lại hoặc nhập câu thủ công"
-                                : `Đang xử lý câu hỏi · ${exam.extractionProgress}%`}
+                          {exam.extractionError && (
+                            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                              {exam.extractionError}
                             </p>
                           )}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <a
-                            href={`${api}/staff/content/exams/${exam.id}/file`}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="btn-outline min-h-9 px-3"
-                          >
-                            {exam.source.mimeType === "application/pdf" ? "Xem PDF" : "Mở tệp nguồn"}
-                          </a>
-                          <button
-                            disabled={busy || exam.extractionStatus === "QUEUED" || exam.extractionStatus === "PROCESSING"}
-                            onClick={() => setSelectedExam(exam.id)}
-                            className="btn-outline min-h-9 px-3"
-                          >
-                            Duyệt câu hỏi
-                          </button>
-                          <button
-                            disabled={busy}
-                            onClick={() =>
-                              patch(
-                                `/staff/content/exams/${exam.id}/answer-visibility`,
-                                { showAnswers: exam.showAnswers === false },
-                                exam.showAnswers === false
-                                  ? "Đã công bố đáp án chi tiết cho học viên."
-                                  : "Đã ẩn đáp án chi tiết đối với học viên.",
-                              )
-                            }
-                            className="btn-outline min-h-9 px-3"
-                          >
-                            {exam.showAnswers === false ? "Công bố đáp án" : "Ẩn đáp án"}
-                          </button>
-                          {exam.status !== "PUBLISHED" && (
-                            <button
-                              disabled={busy || exam.extractionStatus === "QUEUED" || exam.extractionStatus === "PROCESSING"}
-                              onClick={() =>
-                                action(
-                                  () =>
-                                    request(
-                                      `/staff/content/exams/${exam.id}/extract`,
-                                      { method: "POST" },
-                                    ),
-                                  "Đã đưa yêu cầu trích xuất lại vào hàng đợi nền.",
-                                )
-                              }
-                              className="btn-outline min-h-9 px-3"
-                            >
-                              Trích xuất lại
-                            </button>
-                          )}
-                          {exam.status !== "PUBLISHED" && (role === "ADMIN" || exam.status === "DRAFT") && (
-                            <button
-                              disabled={busy || exam.extractionStatus !== "READY"}
-                              onClick={() =>
-                                patch(
-                                  `/staff/content/exams/${exam.id}/status`,
-                                  {
-                                    status:
-                                      role === "ADMIN" ? "PUBLISHED" : "REVIEW",
-                                  },
-                                  role === "ADMIN"
-                                    ? "Đã xuất bản đề."
-                                    : "Đã gửi đề chờ admin duyệt.",
-                                )
-                              }
-                              className="btn-primary min-h-9 px-3"
-                            >
-                              {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
-                            </button>
-                          )}
-                          {exam.status === "REVIEW" && (
-                            <button
-                              disabled={busy}
-                              onClick={() =>
-                                patch(
-                                  `/staff/content/exams/${exam.id}/status`,
-                                  { status: "DRAFT" },
-                                  role === "ADMIN"
-                                    ? "Đã trả đề về bản nháp cho giáo viên chỉnh sửa."
-                                    : "Đã rút đề về bản nháp.",
-                                )
-                              }
-                              className="btn-outline min-h-9 px-3"
-                            >
-                              {role === "ADMIN" ? "Trả về bản nháp" : "Rút về bản nháp"}
-                            </button>
-                          )}
-                          {role === "ADMIN" && exam.status === "PUBLISHED" && (
-                            <button
-                              onClick={() =>
-                                patch(
-                                  `/staff/content/exams/${exam.id}/status`,
-                                  { status: "DRAFT" },
-                                  "Đã gỡ đề về bản nháp.",
-                                )
-                              }
-                              className="btn-outline min-h-9 px-3"
-                            >
-                              Gỡ đề
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {(exam.extractionStatus === "QUEUED" || exam.extractionStatus === "PROCESSING") && (
-                        <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100" role="progressbar" aria-label={`Tiến độ trích xuất ${exam.title}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={exam.extractionProgress}>
-                          <div className="h-full rounded-full bg-[#123d68] transition-[width] duration-500" style={{ width: `${exam.extractionProgress}%` }} />
-                        </div>
-                      )}
-                      {exam.extractionError && (
-                        <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
-                          {exam.extractionError}
+                          {Array.isArray(exam.extractionWarnings) &&
+                            exam.extractionWarnings.length > 0 && (
+                              <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                                Lưu ý trích xuất:{" "}
+                                {exam.extractionWarnings.join(" · ")}
+                              </p>
+                            )}
+                        </article>
+                      ))}
+                      {exams.length > 0 && filteredExams.length === 0 && (
+                        <p className="py-6 text-center text-sm text-slate-500">
+                          Không tìm thấy đề luyện tập nào khớp với bộ lọc.
                         </p>
                       )}
-                      {Array.isArray(exam.extractionWarnings) &&
-                        exam.extractionWarnings.length > 0 && (
-                          <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                            Lưu ý trích xuất:{" "}
-                            {exam.extractionWarnings.join(" · ")}
+                    </div>
+                  );
+                })()}
+
+                {/* Modal 1: Kho tệp nguồn & Tải tệp lên */}
+                <Modal
+                  open={sourceModalOpen}
+                  size="lg"
+                  title="1. Tải tệp đề nguồn một lần"
+                  description="Nhận PDF, DOCX, Excel mẫu, JPG và PNG. Có thể chọn nhiều ảnh để ghép thành một đề. Tệp được quét mã độc và xử lý nền; tối đa 15 MB/tệp, 50 MB/lượt ảnh."
+                  onClose={() => setSourceModalOpen(false)}
+                >
+                  <div className="space-y-5">
+                    {storage && (
+                      <div
+                        className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl bg-slate-50 px-4 py-2.5 text-xs text-slate-600"
+                        aria-label="Dung lượng kho tệp"
+                      >
+                        <strong className="text-[#092b4c]">Kho tệp</strong>
+                        <span>
+                          {(storage.usedBytes / 1024 / 1024).toFixed(1)} MB /{" "}
+                          {(storage.quotaBytes / 1024 / 1024 / 1024).toFixed(1)} GB
+                        </span>
+                        <span>
+                          {storage.sources} đề nguồn · {storage.materials} tài liệu
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex flex-col justify-between gap-3 rounded-2xl border border-blue-100 bg-gradient-to-r from-blue-50/80 to-slate-50 p-4 sm:flex-row sm:items-center">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#123d68] text-white">
+                          <FileSpreadsheet className="size-5" />
+                        </div>
+                        <div>
+                          <p className="text-sm font-bold text-[#092b4c]">
+                            Mẫu Excel nhập đề thi chuẩn hóa
                           </p>
-                        )}
-                    </article>
-                  ))}
-                </div>
+                          <p className="text-xs text-slate-500">
+                            Gồm sheet hướng dẫn chi tiết, 5 câu mẫu (ngữ âm, từ vựng, ngữ pháp, viết lại câu, hình ảnh) và khớp đáp án 100%.
+                          </p>
+                        </div>
+                      </div>
+                      <a
+                        href={`${api}/staff/content/exam-template`}
+                        download="mau-nhap-de-thi.xlsx"
+                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl border border-blue-200 bg-white px-4 py-2 text-xs font-bold text-[#123d68] shadow-sm transition hover:bg-blue-50"
+                      >
+                        <Download className="size-4" />
+                        Tải file mẫu Excel (.xlsx)
+                      </a>
+                    </div>
+
+                    <form
+                      onSubmit={sourceUpload}
+                      className="flex flex-wrap items-end gap-3"
+                    >
+                      <label className="min-w-72 flex-1 text-sm font-semibold">
+                        <span className="block">Chọn tệp đề</span>
+                        <span className="field-control mt-2 flex min-h-12 cursor-pointer items-center gap-3 p-2">
+                          <span className="rounded-lg bg-[#123d68] px-3 py-2 text-xs font-bold text-white">
+                            Chọn tệp
+                          </span>
+                          <span className="min-w-0 flex-1 truncate text-sm font-normal text-slate-600">
+                            {sourceFileNames.length === 0
+                              ? "Chưa chọn tệp"
+                              : sourceFileNames.length === 1
+                                ? sourceFileNames[0]
+                                : `${sourceFileNames.length} ảnh đã chọn`}
+                          </span>
+                        </span>
+                        <input
+                          type="file"
+                          name="file"
+                          accept=".pdf,.docx,.xlsx,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                          multiple
+                          required
+                          className="sr-only"
+                          onChange={(event) =>
+                            setSourceFileNames(
+                              Array.from(event.target.files || []).map(
+                                (file) => file.name,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      <button
+                        disabled={busy}
+                        className="btn-primary disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {busy ? "Đang tải lên..." : "Tải lên"}
+                      </button>
+                    </form>
+
+                    {sources.length > 0 ? (
+                      <div className="divide-y divide-slate-100 rounded-xl border border-slate-200 px-4 text-sm text-slate-600">
+                        {sources.map((source) => (
+                          <div key={source.id} className="py-3.5">
+                            <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+                              <span className="min-w-0 break-words font-semibold text-[#092b4c]">
+                                {source.fileName}
+                              </span>
+                              <span
+                                className={`rounded-full px-2.5 py-1 text-[11px] font-bold ${
+                                  source.status === "READY"
+                                    ? "bg-emerald-50 text-emerald-700"
+                                    : source.status === "FAILED" ||
+                                        source.status === "QUARANTINED"
+                                      ? "bg-red-50 text-red-700"
+                                      : "bg-blue-50 text-blue-700"
+                                }`}
+                              >
+                                {source.statusMessage ||
+                                  sourceStatusLabels[source.status]}
+                              </span>
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-3 text-xs text-slate-500">
+                              <span>
+                                {source.mimeType === "application/pdf"
+                                  ? `${source.pageCount} trang`
+                                  : "Nhập toàn bộ tệp"}
+                              </span>
+                              <span>
+                                {(source.sizeBytes / 1024 / 1024).toFixed(1)} MB
+                              </span>
+                            </div>
+                            {source.status !== "READY" &&
+                              source.status !== "FAILED" &&
+                              source.status !== "QUARANTINED" && (
+                                <div
+                                  className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-100"
+                                  role="progressbar"
+                                  aria-valuenow={source.progress}
+                                  aria-valuemin={0}
+                                  aria-valuemax={100}
+                                  aria-label={`Tiến độ xử lý ${source.fileName}`}
+                                >
+                                  <div
+                                    className="h-full rounded-full bg-[#123d68] transition-[width] duration-500"
+                                    style={{ width: `${source.progress}%` }}
+                                  />
+                                </div>
+                              )}
+                            {source.lastError && (
+                              <p className="mt-2 text-xs leading-5 text-red-700">
+                                {source.lastError}
+                              </p>
+                            )}
+                            <div className="mt-2.5 flex flex-wrap items-center gap-3">
+                              {source.status === "READY" && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedSourceId(source.id);
+                                    setSourceModalOpen(false);
+                                    setCreateExamModalOpen(true);
+                                  }}
+                                  className="text-xs font-extrabold text-[#123d68] underline underline-offset-4"
+                                >
+                                  Tạo đề từ tệp này →
+                                </button>
+                              )}
+                              {(source.status === "FAILED" ||
+                                source.status === "QUARANTINED") && (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  className="text-xs font-bold text-[#123d68] underline underline-offset-4"
+                                  onClick={() =>
+                                    action(
+                                      () =>
+                                        request(
+                                          `/staff/content/sources/${source.id}/retry`,
+                                          { method: "POST" },
+                                        ),
+                                      "Đã đưa tệp vào hàng đợi xử lý lại.",
+                                    )
+                                  }
+                                >
+                                  Thử lại
+                                </button>
+                              )}
+                              {source._count.exams === 0 ? (
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  className="text-xs font-bold text-red-700 underline underline-offset-4"
+                                  onClick={() => {
+                                    if (
+                                      window.confirm(
+                                        `Xóa tệp “${source.fileName}”? Thao tác này không thể hoàn tác.`,
+                                      )
+                                    )
+                                      void action(
+                                        () =>
+                                          request(
+                                            `/staff/content/sources/${source.id}`,
+                                            { method: "DELETE" },
+                                          ),
+                                        "Đã xóa tệp nguồn không còn sử dụng.",
+                                      );
+                                  }}
+                                >
+                                  Xóa tệp
+                                </button>
+                              ) : (
+                                <span className="text-xs text-slate-500">
+                                  Đang dùng cho {source._count.exams} đề
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-500">
+                        Chưa có tệp nguồn nào trong kho.
+                      </p>
+                    )}
+                  </div>
+                </Modal>
+
+                {/* Modal 2: Tạo đề luyện tập mới từ tệp nguồn */}
+                <Modal
+                  open={createExamModalOpen}
+                  size="lg"
+                  title="2. Chuyển tệp thành câu hỏi web"
+                  description="Hệ thống chuẩn hóa câu hỏi từ PDF, Word, Excel hoặc ảnh. Giáo viên vẫn rà soát nội dung và đáp án trước khi gửi duyệt."
+                  onClose={() => setCreateExamModalOpen(false)}
+                >
+                  <div className="mb-4 flex items-center justify-between rounded-xl bg-slate-50 px-4 py-2.5 text-xs text-slate-600">
+                    <span>
+                      Chọn tệp đã tải lên ở trạng thái <strong>Sẵn sàng</strong> để bắt đầu tạo đề.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateExamModalOpen(false);
+                        setSourceModalOpen(true);
+                      }}
+                      className="font-bold text-[#123d68] underline underline-offset-4"
+                    >
+                      + Tải tệp nguồn mới
+                    </button>
+                  </div>
+                  <form
+                    onSubmit={createExam}
+                    className="grid gap-4 md:grid-cols-2"
+                  >
+                    <label className="text-sm font-semibold md:col-span-2">
+                      Tệp nguồn
+                      <select
+                        name="sourceId"
+                        required
+                        value={selectedSourceId}
+                        onChange={(event) =>
+                          setSelectedSourceId(event.target.value)
+                        }
+                        className="field-control mt-2 p-3"
+                      >
+                        <option value="">Chọn file</option>
+                        {sources
+                          .filter((source) => source.status === "READY")
+                          .map((source) => (
+                            <option key={source.id} value={source.id}>
+                              {source.fileName} (
+                              {source.mimeType === "application/pdf"
+                                ? `${source.pageCount} trang`
+                                : "toàn bộ tệp"}
+                              )
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <Field name="title" label="Tên đề" required />
+                    <Field name="summary" label="Mô tả" />
+                    <LevelFields />
+                    {selectedSource?.mimeType === "application/pdf" ? (
+                      <>
+                        <Field
+                          name="startPage"
+                          label="Từ trang"
+                          type="number"
+                          min="1"
+                          required
+                        />
+                        <Field
+                          name="endPage"
+                          label="Đến trang"
+                          type="number"
+                          min="1"
+                          required
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <input type="hidden" name="startPage" value="1" />
+                        <input type="hidden" name="endPage" value="1" />
+                        <div className="surface-inset p-4 text-sm leading-6 text-slate-600 md:col-span-2">
+                          DOCX, Excel và ảnh được nhập toàn bộ. Với Excel, bạn có thể{" "}
+                          <a
+                            href={`${api}/staff/content/exam-template`}
+                            className="font-bold text-[#123d68] underline underline-offset-4"
+                          >
+                            tải file mẫu tại đây
+                          </a>
+                          .
+                        </div>
+                      </>
+                    )}
+                    <label className="text-sm font-semibold">
+                      Thời gian làm bài
+                      <select
+                        name="durationMinutes"
+                        defaultValue="45"
+                        className="field-control mt-2 p-3"
+                      >
+                        {[15, 30, 45, 60, 90, 120].map((minutes) => (
+                          <option key={minutes} value={minutes}>
+                            {minutes} phút
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="text-sm font-semibold md:col-span-2">
+                      Đáp án hàng loạt (không bắt buộc)
+                      <textarea
+                        name="answerText"
+                        className="field-control mt-2 min-h-24 p-3"
+                        placeholder="1:D, 2:A, 3:C"
+                      />
+                    </label>
+                    <label className="flex items-start gap-3 rounded-xl bg-blue-50 p-4 text-sm md:col-span-2">
+                      <input
+                        type="checkbox"
+                        name="extractQuestions"
+                        defaultChecked
+                        className="mt-1 size-4 accent-[#0b3157]"
+                      />
+                      <span>
+                        <strong className="block text-[#092b4c]">
+                          Tự động chuyển tệp thành câu hỏi web
+                        </strong>
+                        <span className="mt-1 block leading-6 text-slate-600">
+                          PDF có lớp chữ và Excel mẫu cho kết quả tốt nhất. OCR từ
+                          ảnh hoặc PDF scan có thể cần sửa lại nhiều hơn.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4 text-sm md:col-span-2">
+                      <input
+                        type="checkbox"
+                        name="showAnswers"
+                        defaultChecked
+                        className="mt-1 size-4 accent-[#0b3157]"
+                      />
+                      <span>
+                        <strong className="block text-[#092b4c]">
+                          Công bố đáp án chi tiết ngay sau khi học viên nộp bài
+                        </strong>
+                        <span className="mt-1 block leading-6 text-slate-600">
+                          Bỏ chọn nếu đây là kỳ thi/bài kiểm tra cần bảo mật đáp án. Bạn có thể bật công bố đáp án bất cứ lúc nào sau khi ca thi kết thúc.
+                        </span>
+                      </span>
+                    </label>
+                    <div className="flex items-center justify-end gap-3 md:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => setCreateExamModalOpen(false)}
+                        className="btn-outline min-h-10 px-4 text-xs"
+                      >
+                        Đóng
+                      </button>
+                      <button
+                        disabled={
+                          busy ||
+                          !sources.some((source) => source.status === "READY")
+                        }
+                        className="btn-primary min-h-10 px-5 text-xs"
+                      >
+                        Tạo bản nháp
+                      </button>
+                    </div>
+                  </form>
+                </Modal>
+
                 {selectedExam &&
                   (() => {
                     const exam = exams.find((item) => item.id === selectedExam);
@@ -1515,7 +2024,7 @@ export function ContentDashboard({ role }: { role: Role }) {
           )}
           {tab === "attempts" && (
             <div className="space-y-4">
-              <div className="soft-card p-6">
+              <div data-tour="tour-attempts-panel" className="soft-card p-6">
                 <div className="flex flex-wrap items-end justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-bold text-[#092b4c]">
@@ -1700,335 +2209,379 @@ export function ContentDashboard({ role }: { role: Role }) {
             </div>
           )}
           {tab === "materials" && (
-            <div className="space-y-6">
+            <div className="space-y-5">
               <div className="soft-card p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  Đăng tài liệu PDF/DOCX
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Tệp được lưu trên máy chủ demo; tài liệu sẽ chỉ công khai sau
-                  khi admin duyệt.
-                </p>
-                <form
-                  onSubmit={createMaterial}
-                  className="mt-5 grid gap-4 md:grid-cols-2"
-                >
-                  <Field name="title" label="Tên tài liệu" required />
-                  <CategoryField />
-                  <LevelFields />
-                  <label className="text-sm font-semibold md:col-span-2">
-                    Mô tả
-                    <textarea
-                      name="summary"
-                      className="field-control mt-2 min-h-20 p-3"
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-[#092b4c]">
+                      Thư viện Tài liệu học tập ({materials.length})
+                    </h2>
+                    <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                      Quản lý và duyệt học liệu ngay trên một màn hình gọn gàng. Nhấn nút bên phải để tải tệp PDF/DOCX hoặc gắn liên kết Google Drive mới.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMaterialModalMode("DRIVE");
+                        setMaterialModalOpen(true);
+                      }}
+                      className="btn-outline inline-flex min-h-10 items-center gap-2 px-4 text-xs font-bold"
+                    >
+                      <ExternalLink size={15} />
+                      <span>Gắn link Google Drive</span>
+                    </button>
+                    <button
+                      type="button"
+                      data-tour="tour-materials-create-btn"
+                      onClick={() => {
+                        setMaterialModalMode("FILE");
+                        setMaterialModalOpen(true);
+                      }}
+                      className="btn-primary inline-flex min-h-10 items-center gap-2 px-4 text-xs font-bold"
+                    >
+                      <Upload size={15} />
+                      <span>Đăng tài liệu mới</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mt-5 grid gap-3 border-t border-slate-100 pt-5 sm:grid-cols-2">
+                  <label className="relative block">
+                    <span className="sr-only">Tìm kiếm tài liệu</span>
+                    <Search
+                      size={16}
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
                     />
-                  </label>
-                  <label className="text-sm font-semibold md:col-span-2">
-                    Tệp PDF/DOCX
                     <input
-                      name="file"
-                      type="file"
-                      accept=".pdf,.docx,application/pdf"
-                      required
-                      className="field-control mt-2 p-2"
+                      value={materialSearch}
+                      onChange={(event) => setMaterialSearch(event.target.value)}
+                      placeholder="Tìm theo tên tài liệu, danh mục hoặc khối lớp..."
+                      className="field-control pl-10 pr-3 py-2.5 text-sm"
                     />
                   </label>
-                  <button
-                    disabled={busy}
-                    className="btn-primary w-fit md:col-span-2"
+                  <select
+                    aria-label="Lọc theo danh mục"
+                    value={materialCategoryFilter}
+                    onChange={(event) =>
+                      setMaterialCategoryFilter(event.target.value)
+                    }
+                    className="field-control px-3 py-2.5 text-sm"
                   >
-                    Tải tài liệu
-                  </button>
-                </form>
+                    <option value="ALL">
+                      Tất cả danh mục ({materials.length})
+                    </option>
+                    {materialCategories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div className="soft-card p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  Hoặc dùng liên kết Google Drive
-                </h2>
-                <p className="mt-1 text-sm text-slate-500">
-                  Dùng khi tài liệu đã có trên Drive của trung tâm. Kiểm tra
-                  quyền chia sẻ trước khi gửi duyệt.
-                </p>
-                <form
-                  onSubmit={createDriveLink}
-                  className="mt-5 grid gap-4 md:grid-cols-2"
-                >
-                  <Field name="title" label="Tên tài liệu" required />
-                  <CategoryField />
-                  <DriveLevelField />
-                  <Field
-                    name="driveUrl"
-                    label="Liên kết Drive"
-                    type="url"
-                    required
-                  />
-                  <label className="text-sm font-semibold md:col-span-2">
-                    Mô tả
-                    <textarea
-                      name="summary"
-                      required
-                      className="field-control mt-2 min-h-20 p-3"
-                    />
-                  </label>
-                  <button
-                    disabled={busy}
-                    className="btn-outline w-fit md:col-span-2"
-                  >
-                    Lưu liên kết
-                  </button>
-                </form>
-              </div>
+
               <div className="soft-card p-6">
                 <h2 className="text-lg font-bold text-[#092b4c]">
                   Tài liệu đã đăng
                 </h2>
-                <div className="mt-4 space-y-3">
-                  {materials.map((item) => (
-                    <div
-                      key={item.id}
-                      className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-4"
-                    >
-                      <div>
-                        <strong className="text-[#092b4c]">{item.title}</strong>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {item.fileName || "Liên kết"} ·{" "}
-                          {item.grade !== null
-                            ? gradeLabel(item.grade)
-                            : item.category}{" "}
-                          · {statusLabels[item.status] || item.status}
+                {(() => {
+                  const q = materialSearch.trim().toLocaleLowerCase("vi");
+                  const filteredMaterials = materials.filter((item) => {
+                    if (
+                      materialCategoryFilter !== "ALL" &&
+                      item.category !== materialCategoryFilter
+                    )
+                      return false;
+                    if (q) {
+                      const titleMatch = item.title
+                        .toLocaleLowerCase("vi")
+                        .includes(q);
+                      const catMatch = item.category
+                        .toLocaleLowerCase("vi")
+                        .includes(q);
+                      if (!titleMatch && !catMatch) return false;
+                    }
+                    return true;
+                  });
+                  return (
+                    <div className="mt-4 space-y-3">
+                      {filteredMaterials.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-4 transition hover:border-slate-300"
+                        >
+                          <div>
+                            <strong className="text-[#092b4c]">
+                              {item.title}
+                            </strong>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {item.fileName || "Liên kết Google Drive"} ·{" "}
+                              {item.grade !== null
+                                ? gradeLabel(item.grade)
+                                : item.category}{" "}
+                              · {statusLabels[item.status] || item.status}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {(item.fileName || item.driveUrl) && (
+                              <a
+                                href={
+                                  item.fileName
+                                    ? `${api}/staff/content/materials/${item.id}/file`
+                                    : safeExternalUrl(item.driveUrl) || "#"
+                                }
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn-outline min-h-9 px-3 text-xs"
+                              >
+                                {item.fileName ? "Xem tệp ↗" : "Mở Drive ↗"}
+                              </a>
+                            )}
+                            {item.status !== "PUBLISHED" &&
+                              (role === "ADMIN" || item.status === "DRAFT") && (
+                                <button
+                                  disabled={busy}
+                                  className="btn-primary min-h-9 px-3"
+                                  onClick={() =>
+                                    patch(
+                                      `/staff/content/materials/${item.id}/status`,
+                                      {
+                                        status:
+                                          role === "ADMIN"
+                                            ? "PUBLISHED"
+                                            : "REVIEW",
+                                      },
+                                      role === "ADMIN"
+                                        ? "Đã xuất bản tài liệu."
+                                        : "Đã gửi tài liệu chờ duyệt.",
+                                    )
+                                  }
+                                >
+                                  {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
+                                </button>
+                              )}
+                            {item.status === "REVIEW" && (
+                              <button
+                                disabled={busy}
+                                className="btn-outline min-h-9 px-3"
+                                onClick={() =>
+                                  patch(
+                                    `/staff/content/materials/${item.id}/status`,
+                                    { status: "DRAFT" },
+                                    role === "ADMIN"
+                                      ? "Đã trả tài liệu về bản nháp."
+                                      : "Đã rút tài liệu về bản nháp.",
+                                  )
+                                }
+                              >
+                                {role === "ADMIN"
+                                  ? "Trả về bản nháp"
+                                  : "Rút về bản nháp"}
+                              </button>
+                            )}
+                            {role === "ADMIN" &&
+                              item.status === "PUBLISHED" && (
+                                <button
+                                  className="btn-outline min-h-9 px-3"
+                                  onClick={() =>
+                                    patch(
+                                      `/staff/content/materials/${item.id}/status`,
+                                      { status: "DRAFT" },
+                                      "Đã gỡ tài liệu.",
+                                    )
+                                  }
+                                >
+                                  Gỡ
+                                </button>
+                              )}
+                          </div>
+                        </div>
+                      ))}
+                      {!materials.length && (
+                        <p className="text-sm text-slate-500">
+                          Chưa có tài liệu.
                         </p>
-                      </div>
-                      <div className="flex gap-2">
-                        {item.status !== "PUBLISHED" && (role === "ADMIN" || item.status === "DRAFT") && (
-                          <button
-                            disabled={busy}
-                            className="btn-primary min-h-9 px-3"
-                            onClick={() =>
-                              patch(
-                                `/staff/content/materials/${item.id}/status`,
-                                {
-                                  status:
-                                    role === "ADMIN" ? "PUBLISHED" : "REVIEW",
-                                },
-                                role === "ADMIN"
-                                  ? "Đã xuất bản tài liệu."
-                                  : "Đã gửi tài liệu chờ duyệt.",
-                              )
-                            }
-                          >
-                            {role === "ADMIN" ? "Xuất bản" : "Gửi duyệt"}
-                          </button>
+                      )}
+                      {materials.length > 0 &&
+                        filteredMaterials.length === 0 && (
+                          <p className="py-4 text-center text-sm text-slate-500">
+                            Không có tài liệu nào khớp với bộ lọc.
+                          </p>
                         )}
-                        {item.status === "REVIEW" && (
-                          <button
-                            disabled={busy}
-                            className="btn-outline min-h-9 px-3"
-                            onClick={() =>
-                              patch(
-                                `/staff/content/materials/${item.id}/status`,
-                                { status: "DRAFT" },
-                                role === "ADMIN"
-                                  ? "Đã trả tài liệu về bản nháp."
-                                  : "Đã rút tài liệu về bản nháp.",
-                              )
-                            }
-                          >
-                            {role === "ADMIN" ? "Trả về bản nháp" : "Rút về bản nháp"}
-                          </button>
-                        )}
-                        {role === "ADMIN" && item.status === "PUBLISHED" && (
-                          <button
-                            className="btn-outline min-h-9 px-3"
-                            onClick={() =>
-                              patch(
-                                `/staff/content/materials/${item.id}/status`,
-                                { status: "DRAFT" },
-                                "Đã gỡ tài liệu.",
-                              )
-                            }
-                          >
-                            Gỡ
-                          </button>
-                        )}
-                      </div>
                     </div>
-                  ))}
-                  {!materials.length && (
-                    <p className="text-sm text-slate-500">Chưa có tài liệu.</p>
-                  )}
-                </div>
+                  );
+                })()}
               </div>
-            </div>
-          )}
-          {tab === "materials" &&
-            materials.some((item) => item.fileName || item.driveUrl) && (
-              <div className="soft-card mt-6 p-6">
-                <h2 className="text-lg font-bold text-[#092b4c]">
-                  Kiểm tra tệp / liên kết trước khi duyệt
-                </h2>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {materials
-                    .filter((item) => item.fileName || item.driveUrl)
-                    .map((item) => (
-                      <a
-                        key={item.id}
-                        href={
-                          item.fileName
-                            ? `${api}/staff/content/materials/${item.id}/file`
-                            : safeExternalUrl(item.driveUrl) || "#"
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                        className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-[#123d68] hover:border-[#123d68]"
-                      >
-                        {item.title} ↗
-                      </a>
-                    ))}
-                </div>
-              </div>
-            )}
-          {tab === "courses" && role === "ADMIN" && (
-            <div className="space-y-6">
-              <div className="grid gap-6 lg:grid-cols-2">
-                <div className="soft-card p-6">
-                  <h2 className="text-lg font-bold text-[#092b4c]">
-                    Tạo khóa học mới
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Khóa học xuất bản sẽ hiển thị trên trang Khóa học công khai và mở ghi danh cho học viên.
-                  </p>
-                  <form
-                    onSubmit={createAdminCourse}
-                    className="mt-5 grid gap-4 sm:grid-cols-2"
+
+              {/* Modal Đăng Tài liệu (Tệp PDF/DOCX hoặc Google Drive) */}
+              <Modal
+                open={materialModalOpen}
+                size="lg"
+                title={
+                  materialModalMode === "FILE"
+                    ? "Đăng tài liệu PDF/DOCX"
+                    : "Hoặc dùng liên kết Google Drive"
+                }
+                description={
+                  materialModalMode === "FILE"
+                    ? "Tệp được lưu trên máy chủ; tài liệu sẽ chỉ công khai sau khi admin duyệt."
+                    : "Dùng khi tài liệu đã có trên Drive của trung tâm. Kiểm tra quyền chia sẻ trước khi gửi duyệt."
+                }
+                onClose={() => setMaterialModalOpen(false)}
+              >
+                <div className="mb-5 flex gap-2 rounded-xl bg-slate-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setMaterialModalMode("FILE")}
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      materialModalMode === "FILE"
+                        ? "bg-white text-[#092b4c] shadow-sm"
+                        : "text-slate-600 hover:text-[#092b4c]"
+                    }`}
                   >
-                    <Field name="title" label="Tên khóa học" required />
+                    Tải tệp PDF / DOCX
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMaterialModalMode("DRIVE")}
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      materialModalMode === "DRIVE"
+                        ? "bg-white text-[#092b4c] shadow-sm"
+                        : "text-slate-600 hover:text-[#092b4c]"
+                    }`}
+                  >
+                    Liên kết Google Drive
+                  </button>
+                </div>
+
+                {materialModalMode === "FILE" ? (
+                  <form
+                    onSubmit={createMaterial}
+                    className="grid gap-4 md:grid-cols-2"
+                  >
+                    <Field name="title" label="Tên tài liệu" required />
+                    <CategoryField />
+                    <LevelFields />
+                    <label className="text-sm font-semibold md:col-span-2">
+                      Mô tả
+                      <textarea
+                        name="summary"
+                        className="field-control mt-2 min-h-20 p-3"
+                      />
+                    </label>
+                    <label className="text-sm font-semibold md:col-span-2">
+                      Tệp PDF/DOCX
+                      <input
+                        name="file"
+                        type="file"
+                        accept=".pdf,.docx,application/pdf"
+                        required
+                        className="field-control mt-2 p-2"
+                      />
+                    </label>
+                    <div className="flex justify-end gap-2 md:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => setMaterialModalOpen(false)}
+                        className="btn-outline min-h-10 px-4 text-xs"
+                      >
+                        Đóng
+                      </button>
+                      <button
+                        disabled={busy}
+                        className="btn-primary min-h-10 px-5 text-xs"
+                      >
+                        Tải tài liệu
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <form
+                    onSubmit={createDriveLink}
+                    className="grid gap-4 md:grid-cols-2"
+                  >
+                    <Field name="title" label="Tên tài liệu" required />
+                    <CategoryField />
+                    <DriveLevelField />
                     <Field
-                      name="ageRange"
-                      label="Độ tuổi / Nhóm lớp"
-                      defaultValue="11–15 tuổi"
+                      name="driveUrl"
+                      label="Liên kết Drive"
+                      type="url"
                       required
                     />
-                    <Field
-                      name="level"
-                      label="Khối / Cấp độ"
-                      defaultValue="Lớp 6 - 9"
-                      required
-                    />
-                    <Field
-                      name="duration"
-                      label="Thời lượng"
-                      defaultValue="24 buổi"
-                      required
-                    />
-                    <label className="text-sm font-semibold sm:col-span-2">
-                      Tóm tắt chương trình
+                    <label className="text-sm font-semibold md:col-span-2">
+                      Mô tả
                       <textarea
                         name="summary"
                         required
                         className="field-control mt-2 min-h-20 p-3"
                       />
                     </label>
-                    <button
-                      disabled={busy}
-                      className="btn-primary w-fit sm:col-span-2"
-                    >
-                      Lưu khóa học
-                    </button>
-                  </form>
-                </div>
-
-                <div className="soft-card p-6">
-                  <h2 className="text-lg font-bold text-[#092b4c]">
-                    Tạo tài khoản & Ghi danh học viên
-                  </h2>
-                  <p className="mt-1 text-sm text-slate-500">
-                    Cấp tài khoản mới cho học viên/giáo viên hoặc ghi danh học viên vào khóa học đang mở.
-                  </p>
-                  <form
-                    onSubmit={createAdminUser}
-                    className="mt-5 grid gap-4 sm:grid-cols-2"
-                  >
-                    <Field name="fullName" label="Họ và tên" required />
-                    <Field name="email" label="Email đăng nhập" type="email" required />
-                    <Field
-                      name="password"
-                      label="Mật khẩu khởi tạo"
-                      type="password"
-                      required
-                    />
-                    <label className="text-sm font-semibold">
-                      Vai trò
-                      <select
-                        name="role"
-                        defaultValue="STUDENT"
-                        className="field-control mt-2 px-3"
+                    <div className="flex justify-end gap-2 md:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => setMaterialModalOpen(false)}
+                        className="btn-outline min-h-10 px-4 text-xs"
                       >
-                        <option value="STUDENT">Học viên</option>
-                        <option value="TEACHER">Giáo viên</option>
-                        <option value="ADMIN">Quản trị viên</option>
-                      </select>
-                    </label>
-                    <Field name="phone" label="Số điện thoại" />
-                    <Field name="gradeLevel" label="Khối lớp (Ví dụ: Lớp 8)" />
-                    <button
-                      disabled={busy}
-                      className="btn-outline w-fit sm:col-span-2"
-                    >
-                      Tạo tài khoản
-                    </button>
-                  </form>
-
-                  <form
-                    onSubmit={enrollStudent}
-                    className="mt-6 grid gap-4 border-t border-slate-200 pt-5 sm:grid-cols-3"
-                  >
-                    <label className="text-sm font-semibold">
-                      Học viên
-                      <select
-                        name="userId"
-                        required
-                        className="field-control mt-2 px-3"
+                        Đóng
+                      </button>
+                      <button
+                        disabled={busy}
+                        className="btn-primary min-h-10 px-5 text-xs"
                       >
-                        <option value="">Chọn học viên</option>
-                        {adminUsers
-                          .filter((item) => item.role === "STUDENT")
-                          .map((student) => (
-                            <option key={student.id} value={student.id}>
-                              {student.fullName} ({student.email})
-                            </option>
-                          ))}
-                      </select>
-                    </label>
-                    <label className="text-sm font-semibold">
-                      Khóa học
-                      <select
-                        name="courseId"
-                        required
-                        className="field-control mt-2 px-3"
-                      >
-                        <option value="">Chọn khóa học</option>
-                        {adminCourses.map((course) => (
-                          <option key={course.id} value={course.id}>
-                            {course.title}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <Field
-                      name="progress"
-                      label="Tiến độ (%)"
-                      type="number"
-                      defaultValue="0"
-                      min="0"
-                      max="100"
-                    />
-                    <button
-                      disabled={busy}
-                      className="btn-primary w-fit sm:col-span-3"
-                    >
-                      Ghi danh / Cập nhật tiến độ
-                    </button>
+                        Lưu liên kết
+                      </button>
+                    </div>
                   </form>
+                )}
+              </Modal>
+            </div>
+          )}
+          {tab === "courses" && role === "ADMIN" && (
+            <div className="space-y-5">
+              <div className="soft-card p-6">
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-bold text-[#092b4c]">
+                      Quản lý Khóa học & Tài khoản Học viên
+                    </h2>
+                    <p className="mt-1 max-w-2xl text-sm text-slate-500">
+                      Theo dõi danh sách khóa học và danh bạ tài khoản ngay đầu trang. Sử dụng các nút bên phải để mở hộp thoại tạo khóa học, cấp tài khoản hoặc ghi danh.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserEnrollModalMode("CREATE_USER");
+                        setUserEnrollModalOpen(true);
+                      }}
+                      className="btn-outline inline-flex min-h-10 items-center gap-2 px-3.5 text-xs font-bold"
+                    >
+                      <Plus size={15} />
+                      <span>Tạo tài khoản mới</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUserEnrollModalMode("ENROLL");
+                        setUserEnrollModalOpen(true);
+                      }}
+                      className="btn-outline inline-flex min-h-10 items-center gap-2 px-3.5 text-xs font-bold"
+                    >
+                      <Users size={15} />
+                      <span>Ghi danh học viên</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCourseModalOpen(true)}
+                      className="btn-primary inline-flex min-h-10 items-center gap-2 px-4 text-xs font-bold"
+                    >
+                      <Plus size={15} />
+                      <span>Tạo khóa học mới</span>
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -2061,6 +2614,13 @@ export function ContentDashboard({ role }: { role: Role }) {
                         </div>
                         <div className="flex flex-wrap gap-2">
                           <button
+                            type="button"
+                            onClick={() => setLessonModalCourseId(course.id)}
+                            className="btn-outline min-h-9 px-3 text-xs"
+                          >
+                            + Thêm bài học
+                          </button>
+                          <button
                             disabled={busy}
                             className="btn-outline min-h-9 px-3 text-xs"
                             onClick={() =>
@@ -2082,31 +2642,6 @@ export function ContentDashboard({ role }: { role: Role }) {
                           </button>
                         </div>
                       </div>
-                      <form
-                        onSubmit={(event) => addCourseLesson(course.id, event)}
-                        className="mt-4 grid gap-3 sm:grid-cols-2 sm:items-end"
-                      >
-                        <Field name="title" label="Tên bài học mới" required />
-                        <Field name="summary" label="Nội dung trọng tâm" required />
-                        <Field
-                          name="driveUrl"
-                          label="Link tài liệu (tùy chọn)"
-                          type="url"
-                          placeholder="https://drive.google.com/..."
-                        />
-                        <Field
-                          name="youtubeUrl"
-                          label="Link video (tùy chọn)"
-                          type="url"
-                          placeholder="https://youtube.com/..."
-                        />
-                        <button
-                          disabled={busy}
-                          className="btn-outline min-h-11 w-fit px-4 text-xs sm:col-span-2"
-                        >
-                          + Thêm bài học
-                        </button>
-                      </form>
                     </div>
                   ))}
                   {!adminCourses.length && (
@@ -2149,6 +2684,266 @@ export function ContentDashboard({ role }: { role: Role }) {
                   ))}
                 </div>
               </div>
+
+              {/* Modal Tạo khóa học mới */}
+              <Modal
+                open={courseModalOpen}
+                size="lg"
+                title="Tạo khóa học mới"
+                description="Khóa học xuất bản sẽ hiển thị trên trang Khóa học công khai và mở ghi danh cho học viên."
+                onClose={() => setCourseModalOpen(false)}
+              >
+                <form
+                  onSubmit={createAdminCourse}
+                  className="grid gap-4 sm:grid-cols-2"
+                >
+                  <Field name="title" label="Tên khóa học" required />
+                  <Field
+                    name="ageRange"
+                    label="Độ tuổi / Nhóm lớp"
+                    defaultValue="11–15 tuổi"
+                    required
+                  />
+                  <Field
+                    name="level"
+                    label="Khối / Cấp độ"
+                    defaultValue="Lớp 6 - 9"
+                    required
+                  />
+                  <Field
+                    name="duration"
+                    label="Thời lượng"
+                    defaultValue="24 buổi"
+                    required
+                  />
+                  <label className="text-sm font-semibold sm:col-span-2">
+                    Tóm tắt chương trình
+                    <textarea
+                      name="summary"
+                      required
+                      className="field-control mt-2 min-h-20 p-3"
+                    />
+                  </label>
+                  <div className="flex justify-end gap-2 sm:col-span-2">
+                    <button
+                      type="button"
+                      onClick={() => setCourseModalOpen(false)}
+                      className="btn-outline min-h-10 px-4 text-xs"
+                    >
+                      Đóng
+                    </button>
+                    <button
+                      disabled={busy}
+                      className="btn-primary min-h-10 px-5 text-xs"
+                    >
+                      Lưu khóa học
+                    </button>
+                  </div>
+                </form>
+              </Modal>
+
+              {/* Modal Tạo tài khoản & Ghi danh học viên */}
+              <Modal
+                open={userEnrollModalOpen}
+                size="lg"
+                title="Tạo tài khoản & Ghi danh học viên"
+                description="Cấp tài khoản mới cho học viên/giáo viên hoặc ghi danh học viên vào khóa học đang mở."
+                onClose={() => setUserEnrollModalOpen(false)}
+              >
+                <div className="mb-5 flex gap-2 rounded-xl bg-slate-100 p-1">
+                  <button
+                    type="button"
+                    onClick={() => setUserEnrollModalMode("CREATE_USER")}
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      userEnrollModalMode === "CREATE_USER"
+                        ? "bg-white text-[#092b4c] shadow-sm"
+                        : "text-slate-600 hover:text-[#092b4c]"
+                    }`}
+                  >
+                    Cấp tài khoản mới
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setUserEnrollModalMode("ENROLL")}
+                    className={`flex-1 rounded-lg py-2 text-xs font-bold transition ${
+                      userEnrollModalMode === "ENROLL"
+                        ? "bg-white text-[#092b4c] shadow-sm"
+                        : "text-slate-600 hover:text-[#092b4c]"
+                    }`}
+                  >
+                    Ghi danh vào khóa học
+                  </button>
+                </div>
+
+                {userEnrollModalMode === "CREATE_USER" ? (
+                  <form
+                    onSubmit={createAdminUser}
+                    className="grid gap-4 sm:grid-cols-2"
+                  >
+                    <Field name="fullName" label="Họ và tên" required />
+                    <Field
+                      name="email"
+                      label="Email đăng nhập"
+                      type="email"
+                      required
+                    />
+                    <Field
+                      name="password"
+                      label="Mật khẩu khởi tạo"
+                      type="password"
+                      required
+                    />
+                    <label className="text-sm font-semibold">
+                      Vai trò
+                      <select
+                        name="role"
+                        defaultValue="STUDENT"
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="STUDENT">Học viên</option>
+                        <option value="TEACHER">Giáo viên</option>
+                        <option value="ADMIN">Quản trị viên</option>
+                      </select>
+                    </label>
+                    <Field name="phone" label="Số điện thoại" />
+                    <Field name="gradeLevel" label="Khối lớp (Ví dụ: Lớp 8)" />
+                    <div className="flex justify-end gap-2 sm:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => setUserEnrollModalOpen(false)}
+                        className="btn-outline min-h-10 px-4 text-xs"
+                      >
+                        Đóng
+                      </button>
+                      <button
+                        disabled={busy}
+                        className="btn-primary min-h-10 px-5 text-xs"
+                      >
+                        Tạo tài khoản
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <form
+                    onSubmit={enrollStudent}
+                    className="grid gap-4 sm:grid-cols-2"
+                  >
+                    <label className="text-sm font-semibold sm:col-span-2">
+                      Học viên
+                      <select
+                        name="userId"
+                        required
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="">Chọn học viên</option>
+                        {adminUsers
+                          .filter((item) => item.role === "STUDENT")
+                          .map((student) => (
+                            <option key={student.id} value={student.id}>
+                              {student.fullName} ({student.email})
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="text-sm font-semibold">
+                      Khóa học
+                      <select
+                        name="courseId"
+                        required
+                        className="field-control mt-2 px-3"
+                      >
+                        <option value="">Chọn khóa học</option>
+                        {adminCourses.map((course) => (
+                          <option key={course.id} value={course.id}>
+                            {course.title}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <Field
+                      name="progress"
+                      label="Tiến độ (%)"
+                      type="number"
+                      defaultValue="0"
+                      min="0"
+                      max="100"
+                    />
+                    <div className="flex justify-end gap-2 sm:col-span-2">
+                      <button
+                        type="button"
+                        onClick={() => setUserEnrollModalOpen(false)}
+                        className="btn-outline min-h-10 px-4 text-xs"
+                      >
+                        Đóng
+                      </button>
+                      <button
+                        disabled={busy}
+                        className="btn-primary min-h-10 px-5 text-xs"
+                      >
+                        Ghi danh / Cập nhật tiến độ
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </Modal>
+
+              {/* Modal Thêm bài học vào khóa học */}
+              {lessonModalCourseId &&
+                (() => {
+                  const targetCourse = adminCourses.find(
+                    (c) => c.id === lessonModalCourseId,
+                  );
+                  return targetCourse ? (
+                    <Modal
+                      open
+                      size="md"
+                      title={`Thêm bài học · ${targetCourse.title}`}
+                      description="Bổ sung bài học mới kèm tài liệu Drive hoặc video bài giảng cho khóa học."
+                      onClose={() => setLessonModalCourseId(null)}
+                    >
+                      <form
+                        onSubmit={(event) =>
+                          addCourseLesson(targetCourse.id, event)
+                        }
+                        className="grid gap-4 sm:grid-cols-2"
+                      >
+                        <Field name="title" label="Tên bài học mới" required />
+                        <Field
+                          name="summary"
+                          label="Nội dung trọng tâm"
+                          required
+                        />
+                        <Field
+                          name="driveUrl"
+                          label="Link tài liệu (tùy chọn)"
+                          type="url"
+                          placeholder="https://drive.google.com/..."
+                        />
+                        <Field
+                          name="youtubeUrl"
+                          label="Link video (tùy chọn)"
+                          type="url"
+                          placeholder="https://youtube.com/..."
+                        />
+                        <div className="flex justify-end gap-2 sm:col-span-2">
+                          <button
+                            type="button"
+                            onClick={() => setLessonModalCourseId(null)}
+                            className="btn-outline min-h-10 px-4 text-xs"
+                          >
+                            Đóng
+                          </button>
+                          <button
+                            disabled={busy}
+                            className="btn-primary min-h-10 px-5 text-xs"
+                          >
+                            + Thêm bài học
+                          </button>
+                        </div>
+                      </form>
+                    </Modal>
+                  ) : null;
+                })()}
             </div>
           )}
           {tab === "applications" && role === "ADMIN" && (
@@ -2329,6 +3124,17 @@ export function ContentDashboard({ role }: { role: Role }) {
                 </Modal>
               ) : null;
             })()}
+          <WorkspaceGuidedTour
+            open={tourOpen}
+            steps={tourSteps}
+            currentTab={tab}
+            onSelectTab={(nextTab) => {
+              setTab(nextTab);
+              setNotice("");
+              setError("");
+            }}
+            onClose={() => setTourOpen(false)}
+          />
         </div>
       </div>
     </div>
@@ -2765,15 +3571,18 @@ function StudentsAnalyticsView({
         </div>
 
         <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
-          <label className="min-w-72 flex-1 text-xs font-semibold text-slate-600">
-            Tìm kiếm học viên
+          <div className="w-full sm:min-w-72 sm:flex-1">
+            <label htmlFor="student-directory-search" className="block text-xs font-semibold text-slate-600">
+              Tìm kiếm học viên
+            </label>
             <input
+              id="student-directory-search"
               value={search}
               onChange={(event) => onSearchChange(event.target.value)}
               placeholder="Tìm theo họ tên, email hoặc tên khóa học..."
               className="field-control mt-1.5 p-2.5 text-sm"
             />
-          </label>
+          </div>
           <div className="flex flex-wrap gap-1.5">
             {(
               [
@@ -2799,128 +3608,113 @@ function StudentsAnalyticsView({
           </div>
         </div>
 
-        <div className="mt-5 overflow-x-auto">
-          <table className="w-full min-w-[780px] border-collapse text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
-                <th className="py-3 pr-4 font-bold">Học viên</th>
-                <th className="px-3 py-3 font-bold">Khóa đang học</th>
-                <th className="px-3 py-3 font-bold text-center">Số đề đã làm</th>
-                <th className="px-3 py-3 font-bold text-center">Điểm TB (Thang 10)</th>
-                <th className="px-3 py-3 font-bold text-center">Cao nhất</th>
-                <th className="px-3 py-3 font-bold">Hoạt động gần nhất</th>
-                <th className="py-3 pl-3 font-bold text-right">Chi tiết</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredStudents.map((student) => {
-                const finished = student.examAttempts.filter((a) => a.status !== "DRAFT");
-                const drafts = student.examAttempts.filter((a) => a.status === "DRAFT");
-                const pendingCount = student.examAttempts.filter((a) => a.status === "SUBMITTED").length;
-                const scores10 = finished
-                  .map((a) => {
-                    const p = a.possible + a.manualPossible;
-                    const e = a.earned + a.manualEarned;
-                    return p > 0 ? (e / p) * 10 : null;
-                  })
-                  .filter((v): v is number => v !== null);
-                const avg10 =
-                  scores10.length > 0
-                    ? (scores10.reduce((sum, v) => sum + v, 0) / scores10.length).toFixed(1)
-                    : null;
-                const max10 = scores10.length > 0 ? Math.max(...scores10).toFixed(1) : null;
-                const latestAttempt = student.examAttempts[0] || null;
+        <div className="mt-5 divide-y divide-slate-100">
+          {filteredStudents.map((student) => {
+            const finished = student.examAttempts.filter((a) => a.status !== "DRAFT");
+            const drafts = student.examAttempts.filter((a) => a.status === "DRAFT");
+            const pendingCount = student.examAttempts.filter((a) => a.status === "SUBMITTED").length;
+            const scores10 = finished
+              .map((a) => {
+                const p = a.possible + a.manualPossible;
+                const e = a.earned + a.manualEarned;
+                return p > 0 ? (e / p) * 10 : null;
+              })
+              .filter((v): v is number => v !== null);
+            const avg10 =
+              scores10.length > 0
+                ? (scores10.reduce((sum, v) => sum + v, 0) / scores10.length).toFixed(1)
+                : null;
+            const max10 = scores10.length > 0 ? Math.max(...scores10).toFixed(1) : null;
+            const latestAttempt = student.examAttempts[0] || null;
 
-                return (
-                  <tr key={student.id} className="hover:bg-slate-50/80">
-                    <td className="py-4 pr-4">
-                      <strong className="block text-[#092b4c]">{student.fullName}</strong>
-                      <span className="text-xs text-slate-500">{student.email}</span>
-                    </td>
-                    <td className="px-3 py-4">
-                      {student.enrollments.length > 0 ? (
-                        <div className="space-y-1.5">
-                          {student.enrollments.map((enr) => (
-                            <div key={enr.id} className="text-xs">
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-semibold text-slate-700">{enr.course.title}</span>
-                                <span className="font-bold text-[#123d68]">{enr.progress}%</span>
-                              </div>
-                              <div className="mt-1 h-1.5 w-28 overflow-hidden rounded-full bg-slate-100">
-                                <div
-                                  className="h-full rounded-full bg-[#123d68]"
-                                  style={{ width: `${enr.progress}%` }}
-                                />
-                              </div>
-                            </div>
-                          ))}
+            return (
+              <div
+                key={student.id}
+                className="grid gap-4 py-4 text-sm transition hover:bg-slate-50/80 md:grid-cols-[1.3fr_1.2fr_1fr_1fr_auto] md:items-center"
+              >
+                <div>
+                  <strong className="block text-[#092b4c]">{student.fullName}</strong>
+                  <span className="block text-xs text-slate-500">{student.email}</span>
+                </div>
+
+                <div>
+                  {student.enrollments.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {student.enrollments.map((enr) => (
+                        <div key={enr.id} className="text-xs">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-semibold text-slate-700">{enr.course.title}</span>
+                            <span className="font-bold text-[#123d68]">{enr.progress}%</span>
+                          </div>
+                          <div className="mt-1 h-1.5 w-full max-w-36 overflow-hidden rounded-full bg-slate-100">
+                            <div
+                              className="h-full rounded-full bg-[#123d68]"
+                              style={{ width: `${enr.progress}%` }}
+                            />
+                          </div>
                         </div>
-                      ) : (
-                        <span className="text-xs text-slate-400">Chưa ghi danh khóa học</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-4 text-center">
-                      <strong className="text-base tabular-nums text-[#092b4c]">
-                        {student.examAttempts.length}
-                      </strong>
-                      <span className="block text-[11px] text-slate-500">
-                        {finished.length} hoàn thành
-                        {drafts.length > 0 ? ` · ${drafts.length} đang làm` : ""}
-                      </span>
-                      {pendingCount > 0 && (
-                        <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">
-                          {pendingCount} bài chờ chấm
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-4 text-center">
-                      {avg10 ? (
-                        <span
-                          className={`inline-block rounded-lg px-2.5 py-1 text-xs font-extrabold tabular-nums ${
-                            Number(avg10) >= 8
-                              ? "bg-emerald-50 text-emerald-700"
-                              : Number(avg10) >= 5
-                                ? "bg-blue-50 text-[#123d68]"
-                                : "bg-red-50 text-red-700"
-                          }`}
-                        >
-                          {avg10} / 10
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-400">Chưa có điểm</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-4 text-center font-bold tabular-nums text-slate-700">
-                      {max10 ? `${max10} / 10` : "—"}
-                    </td>
-                    <td className="px-3 py-4 text-xs text-slate-600">
-                      {latestAttempt ? (
-                        <div>
-                          <strong className="block truncate max-w-44 text-[#092b4c]">
-                            {latestAttempt.exam.title}
-                          </strong>
-                          <span className="text-slate-400">
-                            {formatDate(latestAttempt.updatedAt)}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-400">Chưa làm đề nào</span>
-                      )}
-                    </td>
-                    <td className="py-4 pl-3 text-right">
-                      <button
-                        type="button"
-                        onClick={() => onSelectStudent(student.id)}
-                        className="btn-outline min-h-9 px-3 text-xs font-bold"
-                      >
-                        Xem hồ sơ & lịch sử
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                      ))}
+                    </div>
+                  ) : (
+                    <span className="text-xs text-slate-400">Chưa ghi danh khóa học</span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 md:block md:text-center">
+                  <strong className="text-base tabular-nums text-[#092b4c]">
+                    {student.examAttempts.length} đề
+                  </strong>
+                  <span className="block text-[11px] text-slate-500">
+                    {finished.length} hoàn thành
+                    {drafts.length > 0 ? ` · ${drafts.length} đang làm` : ""}
+                  </span>
+                  {pendingCount > 0 && (
+                    <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">
+                      {pendingCount} bài chờ chấm
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 md:block md:text-center">
+                  {avg10 ? (
+                    <span
+                      className={`inline-block rounded-lg px-2.5 py-1 text-xs font-extrabold tabular-nums ${
+                        Number(avg10) >= 8
+                          ? "bg-emerald-50 text-emerald-700"
+                          : Number(avg10) >= 5
+                            ? "bg-blue-50 text-[#123d68]"
+                            : "bg-red-50 text-red-700"
+                      }`}
+                    >
+                      TB: {avg10} / 10
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">Chưa có điểm</span>
+                  )}
+                  {max10 && (
+                    <span className="block text-[11px] font-semibold text-slate-500 md:mt-1">
+                      Cao nhất: {max10}/10
+                    </span>
+                  )}
+                  {latestAttempt && (
+                    <span className="block truncate text-[11px] text-slate-400 md:max-w-40 md:mx-auto">
+                      {latestAttempt.exam.title}
+                    </span>
+                  )}
+                </div>
+
+                <div className="md:text-right">
+                  <button
+                    type="button"
+                    onClick={() => onSelectStudent(student.id)}
+                    className="btn-outline min-h-9 px-3 text-xs font-bold"
+                  >
+                    Xem hồ sơ & lịch sử
+                  </button>
+                </div>
+              </div>
+            );
+          })}
           {filteredStudents.length === 0 && (
             <p className="py-8 text-center text-sm text-slate-500">
               Không tìm thấy học viên nào phù hợp với bộ lọc.

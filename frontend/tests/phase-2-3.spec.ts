@@ -148,6 +148,16 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
       await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
     }
     await page.getByRole("button", { name: "Luyện đề" }).click();
+    await page.getByRole("button", { name: /Kho tệp nguồn/ }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
+    const fileInput = page.locator('input[name="file"][type="file"]').first();
+    await expect(fileInput).toHaveAttribute("accept", /\.docx/);
+    await expect(fileInput).toHaveAttribute("accept", /\.xlsx/);
+    await expect(fileInput).toHaveAttribute("accept", /\.png/);
+    await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+    await page.getByRole("button", { name: "Tạo đề luyện tập mới" }).click();
+    await expect(page.getByRole("dialog")).toBeVisible();
     await expect(page.getByLabel("Cấp học").first()).toHaveJSProperty(
       "tagName",
       "SELECT",
@@ -160,10 +170,8 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
     await expect(
       page.getByLabel("Tự động chuyển tệp thành câu hỏi web"),
     ).toBeChecked();
-    const fileInput = page.locator('input[name="file"][type="file"]').first();
-    await expect(fileInput).toHaveAttribute("accept", /\.docx/);
-    await expect(fileInput).toHaveAttribute("accept", /\.xlsx/);
-    await expect(fileInput).toHaveAttribute("accept", /\.png/);
+    await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
     const template = await page.request.get("/api/staff/content/exam-template");
     expect(template.ok()).toBeTruthy();
     expect(template.headers()["content-type"]).toContain("spreadsheetml.sheet");
@@ -203,6 +211,7 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
       await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
     }
     await page.getByRole("button", { name: "Thư viện tài liệu" }).click();
+    await page.getByRole("button", { name: "Đăng tài liệu mới" }).click();
     await expect(
       page.getByRole("heading", { name: "Đăng tài liệu PDF/DOCX" }),
     ).toBeVisible();
@@ -210,6 +219,17 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
       "tagName",
       "SELECT",
     );
+    await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+    // Test Interactive Spotlight Guided Tour (?)
+    await page.getByRole("button", { name: "Hướng dẫn sử dụng" }).click();
+    await expect(page.getByText(/HƯỚNG DẪN · 1\/8/i)).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Điều hướng không gian làm việc" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Tiếp" }).click();
+    await expect(page.getByText(/HƯỚNG DẪN · 2\/8/i)).toBeVisible();
+    await page.getByRole("button", { name: "Bỏ qua" }).click();
   });
 
   test("phiên giáo viên hết hạn quay về đăng nhập và giữ trang đang mở", async ({ page, context }) => {

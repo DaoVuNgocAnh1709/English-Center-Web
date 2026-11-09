@@ -315,7 +315,8 @@ test("teacher dashboard analytics, student 360 profile, and attempt filters work
   await expect(page.getByText("Secondary Boost")).toBeVisible();
   await expect(page.getByText("65%")).toBeVisible();
 
-  await page.getByRole("button", { name: "Xem hồ sơ & lịch sử" }).first().click();
+  const profileBtn = page.getByRole("button", { name: "Xem hồ sơ & lịch sử" }).first();
+  await profileBtn.click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("heading", { name: /Hồ sơ học tập · Nguyễn Văn An/ })).toBeVisible();
   await expect(
@@ -332,5 +333,47 @@ test("teacher dashboard analytics, student 360 profile, and attempt filters work
   await expect(page.getByText(/Phân tích câu hỏi học viên hay làm sai nhất/)).toBeVisible();
   await page.getByText(/Phân tích câu hỏi học viên hay làm sai nhất/).click();
   await expect(page.getByText(/Hay nhầm sang:/)).toBeVisible();
+
+  // Stage 4: Compact Action Modals & Interactive Spotlight Guided Tour (?)
+  await page.getByRole("button", { name: "Luyện đề" }).click();
+  await page.getByRole("button", { name: /Kho tệp nguồn/ }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(
+    page.getByRole("dialog").getByText("Mẫu Excel nhập đề thi chuẩn hóa"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+  await page.getByRole("button", { name: "Tạo đề luyện tập mới" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(
+    page.getByRole("dialog").getByLabel("Thời gian làm bài"),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+  await page.getByRole("button", { name: "Thư viện tài liệu" }).click();
+  await page.getByRole("button", { name: "Đăng tài liệu mới" }).click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Đăng tài liệu PDF/DOCX" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Liên kết Google Drive" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Hoặc dùng liên kết Google Drive" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+  // Trigger Interactive Spotlight Guided Tour (?) from sidebar button
+  await page.getByRole("button", { name: "Hướng dẫn sử dụng" }).click();
+  for (let step = 1; step <= 8; step++) {
+    await expect(
+      page.getByText(new RegExp(`HƯỚNG DẪN · ${step}\\/8`, "i")),
+    ).toBeVisible();
+    if (step < 8) {
+      await page.getByRole("button", { name: "Tiếp" }).click();
+    } else {
+      await page.getByRole("button", { name: "Hoàn tất" }).click();
+    }
+  }
+  await expect(page.getByText(/HƯỚNG DẪN ·/i)).toHaveCount(0);
 });
 
