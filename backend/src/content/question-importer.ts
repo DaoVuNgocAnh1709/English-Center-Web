@@ -121,88 +121,540 @@ async function recognizeImage(buffer: Buffer) {
   }
 }
 
-const header = (value: unknown) => clean(String(value ?? "")).toLocaleLowerCase("vi");
+const header = (value: unknown) =>
+  clean(String(value ?? ""))
+    .toLocaleLowerCase("vi")
+    .replace(/\s*\([^)]*\)\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+const cleanExcelCell = (value: string) =>
+  value
+    .replace(/_{4,}/g, "_____")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\r\n/g, "\n")
+    .trim();
+
 const cellText = (value: ExcelJS.CellValue) => {
   if (value && typeof value === "object") {
-    if ("text" in value) return String(value.text);
+    if ("richText" in value && Array.isArray(value.richText)) {
+      return value.richText
+        .map((item) => {
+          const raw = String(item.text ?? "");
+          if (item.font?.underline && raw.trim() && !raw.includes("__")) {
+            return `__${raw}__`;
+          }
+          return raw;
+        })
+        .join("");
+    }
+    if ("text" in value) return String(value.text ?? "");
     if ("result" in value) return String(value.result ?? "");
-    if ("richText" in value) return value.richText.map((item) => item.text).join("");
   }
   return String(value ?? "");
 };
 
+type ParsedSheetData = {
+  name: string;
+  rows: Map<number, Map<number, string>>;
+};
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = parseInt(dec, 10);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    })
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/_x000D_/gi, "");
+}
+
+function getXmlAttr(attrs: string, attrName: string): string | null {
+  const escaped = attrName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const regex = new RegExp(
+    `(?:^|\\s)(?:[\\w.-]+:)?${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`,
+    "i",
+  );
+  const match = attrs.match(regex);
+  if (!match) return null;
+  return decodeXmlEntities(match[1] ?? match[2] ?? "");
+}
+
+function colLettersToNumber(letters: string): number {
+  let col = 0;
+  const upper = letters.toUpperCase();
+  for (let i = 0; i < upper.length; i++) {
+    col = col * 26 + (upper.charCodeAt(i) - 64);
+  }
+  return col;
+}
+
+function extractXmlTextRuns(xmlFragment: string): string {
+  const runRegex = /<(?:[\w.-]+:)?r\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?r>/gi;
+  const runs = [...xmlFragment.matchAll(runRegex)];
+  if (runs.length > 0) {
+    return runs
+      .map((runMatch) => {
+        const inner = runMatch[1];
+        const hasUnderline =
+          /<(?:[\w.-]+:)?u\b(?![^>]*\bval\s*=\s*["']none["'])[^>]*\/?>/i.test(inner);
+        const textParts = [
+          ...inner.matchAll(/<(?:[\w.-]+:)?t\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?t>/gi),
+        ].map((m) => decodeXmlEntities(m[1]));
+        const combined = textParts.join("");
+        if (hasUnderline && combined.trim() && !combined.includes("__")) {
+          return `__${combined}__`;
+        }
+        return combined;
+      })
+      .join("");
+  }
+  const tMatches = [
+    ...xmlFragment.matchAll(/<(?:[\w.-]+:)?t\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?t>/gi),
+  ];
+  return tMatches.map((m) => decodeXmlEntities(m[1])).join("");
+}
+
+async function readZipEntriesAsText(buffer: Buffer): Promise<Map<string, string>> {
+  return new Promise((resolve, reject) => {
+    yauzl.fromBuffer(buffer, { lazyEntries: true }, (error, archive) => {
+      if (error || !archive) {
+        return reject(new BadRequestException("Tệp Excel bị hỏng hoặc không đúng định dạng."));
+      }
+      const files = new Map<string, string>();
+      archive.on("entry", (entry) => {
+        const normalizedName = entry.fileName.replace(/\\/g, "/").replace(/^\/+/, "");
+        if (/\/$/.test(normalizedName) || !/\.(xml|rels)$/i.test(normalizedName)) {
+          archive.readEntry();
+          return;
+        }
+        archive.openReadStream(entry, (streamErr, stream) => {
+          if (streamErr || !stream) {
+            archive.readEntry();
+            return;
+          }
+          const chunks: Buffer[] = [];
+          stream.on("data", (chunk: Buffer) => chunks.push(chunk));
+          stream.on("end", () => {
+            files.set(normalizedName, Buffer.concat(chunks).toString("utf8"));
+            archive.readEntry();
+          });
+          stream.on("error", () => archive.readEntry());
+        });
+      });
+      archive.on("end", () => resolve(files));
+      archive.on("error", reject);
+      archive.readEntry();
+    });
+  });
+}
+
+async function extractSheetsFromXlsxArchive(buffer: Buffer): Promise<ParsedSheetData[]> {
+  const files = await readZipEntriesAsText(buffer);
+
+  // 1. Parse sharedStrings.xml if present
+  const sharedStrings: string[] = [];
+  const sharedStringsEntry = [...files.entries()].find(([k]) =>
+    /(?:^|\/)sharedStrings\.xml$/i.test(k),
+  );
+  if (sharedStringsEntry) {
+    const siRegex = /<(?:[\w.-]+:)?si\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?si>/gi;
+    for (const match of sharedStringsEntry[1].matchAll(siRegex)) {
+      sharedStrings.push(extractXmlTextRuns(match[1]));
+    }
+  }
+
+  // 2. Parse workbook.xml.rels to map rId -> target worksheet path
+  const relTargetById = new Map<string, string>();
+  const workbookRelsEntry = [...files.entries()].find(([k]) =>
+    /(?:^|\/)workbook\.xml\.rels$/i.test(k),
+  );
+  if (workbookRelsEntry) {
+    const relRegex = /<(?:[\w.-]+:)?Relationship\b([^>]*?)\/?>/gi;
+    for (const match of workbookRelsEntry[1].matchAll(relRegex)) {
+      const id = getXmlAttr(match[1], "Id");
+      const target = getXmlAttr(match[1], "Target");
+      if (id && target) {
+        const cleanTarget = target
+          .replace(/\\/g, "/")
+          .replace(/^\/+/, "")
+          .replace(/^xl\//i, "");
+        relTargetById.set(id, `xl/${cleanTarget}`);
+      }
+    }
+  }
+
+  // 3. Parse workbook.xml for ordered sheet names & rIds
+  const sheetOrder: Array<{ name: string; path: string }> = [];
+  const workbookEntry = [...files.entries()].find(([k]) =>
+    /(?:^|\/)workbook\.xml$/i.test(k),
+  );
+  if (workbookEntry) {
+    const sheetTagRegex = /<(?:[\w.-]+:)?sheet\b([^>]*?)\/?>/gi;
+    let index = 1;
+    for (const match of workbookEntry[1].matchAll(sheetTagRegex)) {
+      const attrs = match[1];
+      if (/^<(?:[\w.-]+:)?sheets\b/i.test(match[0])) continue;
+      const name = getXmlAttr(attrs, "name") || `Sheet${index}`;
+      const rId = getXmlAttr(attrs, "id");
+      const targetPath =
+        (rId && relTargetById.get(rId)) || `xl/worksheets/sheet${index}.xml`;
+      sheetOrder.push({ name, path: targetPath });
+      index += 1;
+    }
+  }
+
+  const worksheetFiles = [...files.keys()]
+    .filter((k) => /(?:^|\/)worksheets\/sheet\d+\.xml$/i.test(k))
+    .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+  const resolvedSheets: Array<{ name: string; xml: string }> = [];
+  for (const item of sheetOrder) {
+    const found = [...files.entries()].find(
+      ([k]) => k.toLowerCase() === item.path.toLowerCase(),
+    );
+    if (found) {
+      resolvedSheets.push({ name: item.name, xml: found[1] });
+    }
+  }
+  for (const wsKey of worksheetFiles) {
+    const alreadyAdded = resolvedSheets.some(
+      (s) => s.xml === files.get(wsKey),
+    );
+    if (!alreadyAdded) {
+      resolvedSheets.push({
+        name: wsKey.split("/").pop() || "Sheet",
+        xml: files.get(wsKey) || "",
+      });
+    }
+  }
+
+  // 4. Parse rows and cells in each worksheet
+  const result: ParsedSheetData[] = [];
+  for (const ws of resolvedSheets) {
+    const rows = new Map<number, Map<number, string>>();
+    const rowRegex = /<(?:[\w.-]+:)?row\b([^>]*)>([\s\S]*?)<\/(?:[\w.-]+:)?row>/gi;
+    let autoRowNum = 0;
+    for (const rowMatch of ws.xml.matchAll(rowRegex)) {
+      autoRowNum += 1;
+      const rAttr = getXmlAttr(rowMatch[1], "r");
+      const rowNumber = rAttr && Number(rAttr) > 0 ? Number(rAttr) : autoRowNum;
+      autoRowNum = rowNumber;
+      const cellMap = rows.get(rowNumber) || new Map<number, string>();
+      const cellRegex =
+        /<(?:[\w.-]+:)?c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/(?:[\w.-]+:)?c>)/gi;
+      let autoColNum = 0;
+      for (const cellMatch of rowMatch[2].matchAll(cellRegex)) {
+        const cellAttrs = cellMatch[1] || "";
+        const cellInner = cellMatch[2] || "";
+        const refAttr = getXmlAttr(cellAttrs, "r");
+        const colLetters = refAttr?.match(/^[A-Za-z]+/)?.[0];
+        const colNumber = colLetters
+          ? colLettersToNumber(colLetters)
+          : autoColNum + 1;
+        autoColNum = colNumber;
+        if (!cellInner) continue;
+
+        const cellType = (getXmlAttr(cellAttrs, "t") || "").toLowerCase();
+        let value = "";
+        if (cellType === "inlinestr") {
+          const isMatch = cellInner.match(
+            /<(?:[\w.-]+:)?is\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?is>/i,
+          );
+          value = extractXmlTextRuns(isMatch ? isMatch[1] : cellInner);
+        } else {
+          const vMatch = cellInner.match(
+            /<(?:[\w.-]+:)?v\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?v>/i,
+          );
+          const rawV = vMatch ? decodeXmlEntities(vMatch[1].trim()) : "";
+          if (cellType === "s") {
+            const idx = Number(rawV);
+            value =
+              Number.isInteger(idx) && idx >= 0 && idx < sharedStrings.length
+                ? sharedStrings[idx]
+                : rawV;
+          } else if (cellType === "b") {
+            value = rawV === "1" || rawV.toLowerCase() === "true" ? "TRUE" : "FALSE";
+          } else if (rawV) {
+            value = rawV;
+          } else {
+            const isMatch = cellInner.match(
+              /<(?:[\w.-]+:)?is\b[^>]*>([\s\S]*?)<\/(?:[\w.-]+:)?is>/i,
+            );
+            if (isMatch) value = extractXmlTextRuns(isMatch[1]);
+          }
+        }
+        if (value.trim()) {
+          cellMap.set(colNumber, value);
+        }
+      }
+      if (cellMap.size > 0) {
+        rows.set(rowNumber, cellMap);
+      }
+    }
+    result.push({ name: ws.name, rows });
+  }
+  return result;
+}
+
+async function loadWorkbookSheets(buffer: Buffer): Promise<ParsedSheetData[]> {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
+    if (workbook.worksheets.length > 0) {
+      const sheets: ParsedSheetData[] = workbook.worksheets.map((ws) => {
+        const rows = new Map<number, Map<number, string>>();
+        ws.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+          const cellMap = new Map<number, string>();
+          row.eachCell({ includeEmpty: false }, (cell, colNumber) => {
+            const val = cellText(cell.value);
+            if (val.trim()) {
+              cellMap.set(colNumber, val);
+            }
+          });
+          if (cellMap.size > 0) {
+            rows.set(rowNumber, cellMap);
+          }
+        });
+        return { name: ws.name, rows };
+      });
+      if (sheets.some((s) => s.rows.size > 0)) {
+        return sheets;
+      }
+    }
+  } catch {
+    // Fallback to direct OpenXML ZIP/XML reader when ExcelJS fails on namespace-prefixed or edited workbooks
+  }
+  return extractSheetsFromXlsxArchive(buffer);
+}
+
+function inferExcelTaskType(
+  sectionText: string,
+  kindText: string,
+  contentText: string,
+  kind: QuestionKind,
+): QuestionTaskType {
+  const combined = `${sectionText} ${kindText} ${contentText}`
+    .normalize("NFKC")
+    .toLocaleLowerCase("vi");
+  if (/pronunciation|phonetic|different sound|underlined part|phát âm|ngữ âm/.test(combined))
+    return QuestionTaskType.PRONUNCIATION;
+  if (/stress|trọng âm/.test(combined)) return QuestionTaskType.STRESS;
+  if (/closest in meaning|synonym|đồng nghĩa/.test(combined)) return QuestionTaskType.SYNONYM;
+  if (/opposite in meaning|antonym|trái nghĩa/.test(combined)) return QuestionTaskType.ANTONYM;
+  if (/phrasal verb|cụm động từ/.test(combined)) return QuestionTaskType.PHRASAL_VERB;
+  if (/word form|dạng đúng của từ/.test(combined)) return QuestionTaskType.WORD_FORM;
+  if (/verb form|chia động từ/.test(combined)) return QuestionTaskType.VERB_FORM;
+  if (/cloze|complete the passage|điền.{0,20}đoạn văn/.test(combined)) return QuestionTaskType.CLOZE;
+  if (/gap fill|fill in the blank|điền từ|điền chỗ trống/.test(combined)) return QuestionTaskType.GAP_FILL;
+  if (/reading|read the passage|đọc hiểu/.test(combined)) return QuestionTaskType.READING_COMPREHENSION;
+  if (kind === QuestionKind.TRUE_FALSE || /true or false|đúng.{0,5}sai/.test(combined))
+    return QuestionTaskType.TRUE_FALSE;
+  if (kind === QuestionKind.MULTIPLE_CHOICE || /multiple select|chọn nhiều/.test(combined))
+    return QuestionTaskType.MULTIPLE_SELECT;
+  if (/match|matching|nối/.test(combined)) return QuestionTaskType.MATCHING;
+  if (/order|rearrange|sắp xếp/.test(combined)) return QuestionTaskType.ORDERING;
+  if (/mistake|error correction|sửa lỗi/.test(combined)) return QuestionTaskType.ERROR_CORRECTION;
+  if (/communication|giao tiếp/.test(combined)) return QuestionTaskType.FUNCTIONAL_COMMUNICATION;
+  if (/passive voice|bị động/.test(combined)) return QuestionTaskType.PASSIVE_VOICE;
+  if (/reported speech|tường thuật/.test(combined)) return QuestionTaskType.REPORTED_SPEECH;
+  if (/conditional|điều kiện/.test(combined)) return QuestionTaskType.CONDITIONAL_SENTENCE;
+  if (/relative clause|mệnh đề quan hệ/.test(combined)) return QuestionTaskType.RELATIVE_CLAUSE;
+  if (/tag question|câu hỏi đuôi/.test(combined)) return QuestionTaskType.TAG_QUESTION;
+  if (/combine|kết hợp câu/.test(combined)) return QuestionTaskType.SENTENCE_COMBINATION;
+  if (/rewrite|complete the second sentence|viết lại câu/.test(combined))
+    return QuestionTaskType.SENTENCE_REWRITE;
+  if (/sentence building|từ gợi ý/.test(combined)) return QuestionTaskType.SENTENCE_BUILDING;
+  if (/translate|dịch/.test(combined)) return QuestionTaskType.TRANSLATION;
+  if (/dictation|nghe chép/.test(combined)) return QuestionTaskType.DICTATION;
+  if (/listen|nghe/.test(combined)) return QuestionTaskType.LISTENING;
+  if (kind === QuestionKind.ESSAY || /writing|essay|bài luận|viết đoạn/.test(combined))
+    return QuestionTaskType.WRITING;
+  if (/vocabulary|từ vựng/.test(combined)) return QuestionTaskType.VOCABULARY;
+  if (/grammar|ngữ pháp/.test(combined)) return QuestionTaskType.GRAMMAR;
+  return QuestionTaskType.GENERAL;
+}
+
 async function parseWorkbook(buffer: Buffer) {
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
-  if (workbook.worksheets.length > maxSheets)
+  const sheets = await loadWorkbookSheets(buffer);
+  if (sheets.length > maxSheets)
     throw new BadRequestException(`Excel chỉ được tối đa ${maxSheets} trang tính.`);
-  const totalRows = workbook.worksheets.reduce((sum, item) => sum + item.rowCount, 0);
+  const totalRows = sheets.reduce((sum, item) => sum + item.rows.size, 0);
   if (totalRows > maxRows)
     throw new BadRequestException(`Excel chỉ được tối đa ${maxRows.toLocaleString("vi-VN")} dòng.`);
 
-  // Find sheet containing question content (supporting template with Guide sheet)
-  let sheet = workbook.worksheets[0];
+  const contentAliases = [
+    "nội dung",
+    "noi dung",
+    "nội dung câu hỏi",
+    "noi dung cau hoi",
+    "câu hỏi",
+    "cau hoi",
+    "đề bài",
+    "de bai",
+    "question content",
+    "question text",
+    "content",
+    "prompt",
+    "stem",
+  ];
+
+  // Find sheet & header row containing question content (supporting template with Guide sheet or title rows)
+  let selectedSheet: ParsedSheetData | undefined = sheets[0];
+  let headerRowNumber = 1;
   let headers = new Map<string, number>();
-  for (const ws of workbook.worksheets) {
-    const wsHeaders = new Map<string, number>();
-    ws.getRow(1).eachCell((cell, col) => wsHeaders.set(header(cellText(cell.value)), col));
-    if (["nội dung", "noi dung", "question content", "content"].some((n) => wsHeaders.has(n))) {
-      sheet = ws;
-      headers = wsHeaders;
-      break;
+
+  for (const ws of sheets) {
+    if (/hướng dẫn|huong dan|guide|instruction/i.test(ws.name)) continue;
+    const rowNumbers = [...ws.rows.keys()].sort((a, b) => a - b).slice(0, 10);
+    const firstRowCells = rowNumbers[0] ? ws.rows.get(rowNumbers[0]) : undefined;
+    const firstRowHeaders = new Set(
+      firstRowCells ? [...firstRowCells.values()].map((v) => header(v)) : [],
+    );
+    if (firstRowHeaders.has("quy định") || firstRowHeaders.has("quy dinh")) continue;
+
+    let matched = false;
+    for (const rNum of rowNumbers) {
+      const rowCells = ws.rows.get(rNum);
+      if (!rowCells) continue;
+      const wsHeaders = new Map<string, number>();
+      for (const [col, val] of rowCells.entries()) {
+        const h = header(val);
+        if (h && !wsHeaders.has(h)) wsHeaders.set(h, col);
+      }
+      const hasContentCol = contentAliases.some((alias) => wsHeaders.has(alias));
+      const isGuideRow = wsHeaders.has("bắt buộc") || wsHeaders.has("bat buoc");
+      if (hasContentCol && !isGuideRow) {
+        selectedSheet = ws;
+        headerRowNumber = rNum;
+        headers = wsHeaders;
+        matched = true;
+        break;
+      }
     }
-  }
-  if (!sheet) throw new BadRequestException("File Excel không có trang dữ liệu.");
-  if (headers.size === 0) {
-    sheet.getRow(1).eachCell((cell, col) => headers.set(header(cellText(cell.value)), col));
+    if (matched) break;
   }
 
-  const find = (...names: string[]) => names.map((name) => headers.get(name)).find(Boolean);
+  if (!selectedSheet) throw new BadRequestException("File Excel không có trang dữ liệu.");
+  if (headers.size === 0) {
+    const firstRowNum = [...selectedSheet.rows.keys()].sort((a, b) => a - b)[0] || 1;
+    headerRowNumber = firstRowNum;
+    const firstRow = selectedSheet.rows.get(firstRowNum);
+    if (firstRow) {
+      for (const [col, val] of firstRow.entries()) {
+        const h = header(val);
+        if (h && !headers.has(h)) headers.set(h, col);
+      }
+    }
+  }
+
+  const find = (...names: string[]) => {
+    for (const name of names) {
+      const exact = headers.get(name);
+      if (exact) return exact;
+    }
+    for (const [key, col] of headers.entries()) {
+      if (names.some((name) => name.length > 2 && key.startsWith(name))) {
+        return col;
+      }
+    }
+    return undefined;
+  };
+
+  const optionLetters = ["a", "b", "c", "d", "e", "f", "g", "h"];
   const columns = {
-    position: find("câu", "cau", "stt", "question"),
-    kind: find("loại", "loai", "type"),
-    content: find("nội dung", "noi dung", "question content", "content"),
-    image: find("hình ảnh", "hinh anh", "ảnh", "anh", "image", "image url"),
-    answer: find("đáp án", "dap an", "answer"),
-    points: find("điểm", "diem", "points"),
-    section: find("phần", "phan", "section"),
-    options: ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => headers.get(name)),
+    position: find("câu", "cau", "stt", "số thứ tự", "so thu tu", "question", "no", "no.", "#"),
+    kind: find("loại", "loai", "loại câu", "loai cau", "dạng", "dang", "type", "question type"),
+    content: find(...contentAliases),
+    image: find("hình ảnh", "hinh anh", "ảnh", "anh", "link ảnh", "url ảnh", "image", "image url"),
+    answer: find("đáp án", "dap an", "đáp án đúng", "dap an dung", "answer", "correct answer", "key"),
+    points: find("điểm", "diem", "điểm số", "diem so", "points", "score", "mark"),
+    section: find("phần", "phan", "chuyên đề", "chuyen de", "chủ đề", "chu de", "kỹ năng", "ky nang", "section", "part", "topic"),
+    options: optionLetters.map((letter) =>
+      headers.get(letter) ||
+      headers.get(`đáp án ${letter}`) ||
+      headers.get(`dap an ${letter}`) ||
+      headers.get(`phương án ${letter}`) ||
+      headers.get(`phuong an ${letter}`) ||
+      headers.get(`lựa chọn ${letter}`) ||
+      headers.get(`option ${letter}`) ||
+      headers.get(`choice ${letter}`),
+    ),
   };
   if (!columns.content) throw new BadRequestException("Excel cần cột ‘Nội dung’.");
   const questions: ImportedQuestion[] = [];
-  sheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const get = (col?: number) => col ? clean(cellText(row.getCell(col).value)) : "";
+  const sortedRowNumbers = [...selectedSheet.rows.keys()]
+    .filter((r) => r > headerRowNumber)
+    .sort((a, b) => a - b);
+
+  for (const rowNumber of sortedRowNumbers) {
+    const rowCells = selectedSheet.rows.get(rowNumber);
+    if (!rowCells) continue;
+    const get = (col?: number) => (col ? cleanExcelCell(rowCells.get(col) || "") : "");
     const rawContent = get(columns.content);
-    if (!rawContent) return;
+    if (!rawContent) continue;
     const imageUrl = get(columns.image);
-    const content = imageUrl && /^https?:\/\//i.test(imageUrl) && !rawContent.includes(imageUrl)
-      ? `${rawContent}\n\n![Hình minh họa](${imageUrl})`
-      : rawContent;
-    const options = columns.options.map((col, index) => {
-      const value = get(col);
-      return value ? `${String.fromCharCode(65 + index)}. ${value}` : "";
-    }).filter(Boolean);
+    const content =
+      imageUrl && /^https?:\/\//i.test(imageUrl) && !rawContent.includes(imageUrl)
+        ? `${rawContent}\n\n![Hình minh họa](${imageUrl})`
+        : rawContent;
+    const options = columns.options
+      .map((col, index) => {
+        const value = get(col);
+        if (!value) return "";
+        const prefix = String.fromCharCode(65 + index);
+        const stripped = value.replace(new RegExp(`^${prefix}\\s*[.)\\-:]\\s*`, "i"), "").trim();
+        return `${prefix}. ${stripped || value}`;
+      })
+      .filter(Boolean);
     const rawKind = get(columns.kind).toLocaleLowerCase("vi");
-    const kind = options.length >= 2 || /trắc|choice/.test(rawKind)
-      ? QuestionKind.SINGLE_CHOICE
-      : /tự luận|essay/.test(rawKind) ? QuestionKind.ESSAY : QuestionKind.SHORT_TEXT;
-    const parsedPoints = Number(get(columns.points));
+    const kind =
+      /đúng\s*\/?\s*sai|true\s*\/?\s*false/.test(rawKind)
+        ? QuestionKind.TRUE_FALSE
+        : /nhiều lựa chọn|multiple\s*(?:choice|select)/.test(rawKind)
+          ? QuestionKind.MULTIPLE_CHOICE
+          : options.length >= 2 || /trắc|choice/.test(rawKind)
+            ? QuestionKind.SINGLE_CHOICE
+            : /tự luận|essay/.test(rawKind)
+              ? QuestionKind.ESSAY
+              : QuestionKind.SHORT_TEXT;
+    const sectionVal = get(columns.section) || null;
+    const taskType = inferExcelTaskType(sectionVal || "", rawKind, rawContent, kind);
+    const rawAnswer = get(columns.answer);
+    const normalizedAnswer =
+      kind === QuestionKind.SINGLE_CHOICE && rawAnswer
+        ? rawAnswer.match(/^([A-H])(?:\s*[.):-]|\s*$)/i)?.[1]?.toUpperCase() || rawAnswer
+        : rawAnswer;
+    const parsedPoints = Number(get(columns.points).replace(",", "."));
     questions.push({
       position: questions.length + 1,
       sourceLabel: get(columns.position) || String(questions.length + 1),
-      section: get(columns.section) || null,
+      section: sectionVal,
       content: content.slice(0, 4000),
-      options: options.slice(0, 8),
+      options:
+        kind === QuestionKind.TRUE_FALSE && options.length < 2
+          ? ["True", "False"]
+          : options.slice(0, 8),
       kind,
+      taskType,
       sourcePage: 1,
       recognitionConfidence: 1,
       reviewFlags: [],
       sourceBounds: null,
-      answer: get(columns.answer) || null,
-      points: Number.isFinite(parsedPoints) && parsedPoints > 0 && parsedPoints <= 100 ? parsedPoints : 1,
+      answer: normalizedAnswer || null,
+      points:
+        Number.isFinite(parsedPoints) && parsedPoints > 0 && parsedPoints <= 100
+          ? parsedPoints
+          : 1,
     });
-  });
+  }
   return questions.slice(0, 500);
 }
 

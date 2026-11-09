@@ -247,14 +247,18 @@ export function normalizedScoringAnswer(
           .sort(([left], [right]) => Number(left) - Number(right))
           .map(([, item]) => String(item).trim().toLocaleLowerCase("vi"))
           .join("|");
-    } catch {}
+    } catch {
+      // ignore invalid JSON
+    }
   }
   if (taskType === QuestionTaskType.ORDERING) {
     try {
       const parsed = JSON.parse(normalized) as unknown;
       if (Array.isArray(parsed))
         return parsed.map((item) => String(item).trim().toLocaleLowerCase("vi")).join("|");
-    } catch {}
+    } catch {
+      // ignore invalid JSON
+    }
   }
   if (kind === QuestionKind.SINGLE_CHOICE) {
     const letter = normalized.match(/^([A-H])(?:[.)]|\s|$)/i)?.[1];
@@ -301,10 +305,10 @@ export function isScoringAnswerMatch(
     kind === QuestionKind.SHORT_TEXT &&
     taskType !== QuestionTaskType.MATCHING &&
     taskType !== QuestionTaskType.ORDERING &&
-    /[\/|]/.test(expectedAnswer)
+    /[|/]/.test(expectedAnswer)
   ) {
     const variants = expectedAnswer
-      .split(/\s*[\/|]\s*/)
+      .split(/\s*[|/]\s*/)
       .map((variant) => normalizeShortTextPhrase(variant))
       .filter(Boolean);
     return variants.includes(normalizedResponse);
