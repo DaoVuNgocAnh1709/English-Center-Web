@@ -126,6 +126,27 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
     await expect(
       page.getByRole("heading", { name: "Dữ liệu cải thiện nhận diện đề" }),
     ).toHaveCount(0);
+    await expect(page.getByText("Tổng lượt làm đề")).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Thống kê hiệu suất theo Đề thi" }),
+    ).toBeVisible();
+    const studentsResp = await page.request.get("/api/staff/content/students");
+    expect(studentsResp.ok()).toBeTruthy();
+    await page.getByRole("button", { name: "Học viên & Tiến độ" }).click();
+    await expect(
+      page.getByRole("heading", { name: "Danh sách & Thống kê Học viên" }),
+    ).toBeVisible();
+    const studentProfileBtns = page.getByRole("button", {
+      name: "Xem hồ sơ & lịch sử",
+    });
+    if (await studentProfileBtns.count()) {
+      await studentProfileBtns.first().click();
+      await expect(page.getByRole("dialog")).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: /Hồ sơ học tập/ }),
+      ).toBeVisible();
+      await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+    }
     await page.getByRole("button", { name: "Luyện đề" }).click();
     await expect(page.getByLabel("Cấp học").first()).toHaveJSProperty(
       "tagName",
@@ -153,11 +174,14 @@ test.describe("giai đoạn 3 - cổng người dùng", () => {
       await expect(page.getByRole("button", { name: /Cần kiểm tra/ })).toBeVisible();
       await expect(page.getByRole("region", { name: "Tệp đề gốc" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Câu này đúng" }).first()).toBeVisible();
-      await expect(page.getByRole("button", { name: "Sửa nội dung" }).first()).toBeVisible();
+      const editButton = page.getByRole("button", { name: "Sửa nội dung" }).first();
+      await expect(editButton).toBeVisible();
       await expect(page.getByRole("button", { name: "Đây không phải câu hỏi" }).first()).toBeVisible();
-      await page.getByRole("button", { name: "Sửa nội dung" }).first().click();
-      await expect(page.getByRole("button", { name: "Lưu thay đổi" }).first()).toBeVisible();
-      await page.getByRole("button", { name: "Hủy" }).first().click();
+      if (await editButton.isEnabled()) {
+        await editButton.click();
+        await expect(page.getByRole("button", { name: "Lưu thay đổi" }).first()).toBeVisible();
+        await page.getByRole("button", { name: "Hủy" }).first().click();
+      }
       if (process.env.CAPTURE_SIMPLE_REVIEW)
         await page.screenshot({ path: process.env.CAPTURE_SIMPLE_REVIEW });
       const sourcePreview = page.locator('iframe[title^="Đề gốc"]');

@@ -162,3 +162,175 @@ test("library filters and teacher application form are visible", async ({
   await expect(page.getByLabel("Kinh nghiệm giảng dạy")).toBeVisible();
 });
 
+test("teacher dashboard analytics, student 360 profile, and attempt filters work across all 3 stages", async ({
+  page,
+}) => {
+  const mockQuestions = [
+    {
+      position: 1,
+      content: "Choose the word with different pronunciation.",
+      options: ["A. l__a__yer", "B. pl__a__yer", "C. m__a__yor", "D. st__a__y"],
+      interactionData: null,
+      kind: "SINGLE_CHOICE",
+      taskType: "PRONUNCIATION",
+      answer: "C",
+      points: 5,
+      sourcePage: 1,
+      section: "I. Phonetics",
+      recognitionProvider: "LOCAL",
+      recognitionModel: null,
+      extractionBatch: null,
+      sourceLabel: "1",
+      recognitionConfidence: 0.98,
+      reviewFlags: [],
+      sourceBounds: null,
+      reviewedAt: new Date().toISOString(),
+    },
+    {
+      position: 2,
+      content: "She ___ to school every day.",
+      options: ["A. go", "B. goes", "C. going", "D. gone"],
+      interactionData: null,
+      kind: "SINGLE_CHOICE",
+      taskType: "GRAMMAR",
+      answer: "B",
+      points: 5,
+      sourcePage: 1,
+      section: "II. Grammar",
+      recognitionProvider: "LOCAL",
+      recognitionModel: null,
+      extractionBatch: null,
+      sourceLabel: "2",
+      recognitionConfidence: 0.98,
+      reviewFlags: [],
+      sourceBounds: null,
+      reviewedAt: new Date().toISOString(),
+    },
+  ];
+
+  const mockExam = {
+    id: "exam-analytics-1",
+    slug: "de-kiem-tra-analytics",
+    title: "Đề kiểm tra Giữa kỳ Lớp 8",
+    schoolLevel: "MIDDLE",
+    grade: 8,
+    status: "PUBLISHED",
+    showAnswers: true,
+    startPage: 1,
+    endPage: 2,
+    extractedAt: new Date().toISOString(),
+    extractionWarnings: [],
+    extractionStatus: "READY",
+    extractionProgress: 100,
+    extractionError: null,
+    extractionProvider: "LOCAL",
+    aiModel: null,
+    aiInputTokens: null,
+    aiOutputTokens: null,
+    aiFallbackReason: null,
+    questions: mockQuestions,
+    source: { fileName: "de-lop-8.pdf", mimeType: "application/pdf" },
+  };
+
+  const mockAttempts = [
+    {
+      id: "attempt-a1",
+      userId: "student-a",
+      participantName: "Nguyễn Văn An",
+      status: "SUBMITTED",
+      answers: { "1": "A", "2": "B" },
+      earned: 5,
+      possible: 10,
+      manualEarned: 0,
+      manualPossible: 0,
+      manualScores: {},
+      pending: 1,
+      teacherFeedback: "Cần ôn lại phần phát âm nguyên âm đôi.",
+      submittedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      user: { id: "student-a", fullName: "Nguyễn Văn An", email: "an.nguyen@example.com" },
+      exam: { id: mockExam.id, title: mockExam.title, schoolLevel: "MIDDLE", grade: 8, questions: mockQuestions },
+    },
+  ];
+
+  const mockStudents = [
+    {
+      id: "student-a",
+      fullName: "Nguyễn Văn An",
+      email: "an.nguyen@example.com",
+      isActive: true,
+      createdAt: new Date().toISOString(),
+      enrollments: [
+        {
+          id: "enr-1",
+          progress: 65,
+          status: "ACTIVE",
+          course: { id: "c-1", title: "Secondary Boost", slug: "secondary-boost", level: "THCS", ageRange: "12–15 tuổi" },
+        },
+      ],
+      examAttempts: [
+        {
+          ...mockAttempts[0],
+          examId: mockExam.id,
+          exam: { ...mockExam },
+        },
+      ],
+    },
+  ];
+
+  await page.route("**/api/portal/overview", (route) =>
+    route.fulfill({
+      json: { user: { fullName: "Giáo viên Demo", email: "teacher@brightpath.edu.vn", role: "TEACHER" } },
+    }),
+  );
+  await page.route("**/api/staff/content/sources", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/staff/content/exams", (route) => route.fulfill({ json: [mockExam] }));
+  await page.route("**/api/staff/content/materials", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/staff/content/attempts", (route) => route.fulfill({ json: mockAttempts }));
+  await page.route("**/api/staff/content/students", (route) => route.fulfill({ json: mockStudents }));
+  await page.route("**/api/staff/content/storage", (route) =>
+    route.fulfill({ json: { usedBytes: 1024, quotaBytes: 1024 * 1024 * 100, sources: 1, materials: 0 } }),
+  );
+  await page.route("**/api/staff/content/recognition-learning", (route) =>
+    route.fulfill({
+      json: { corrections: 0, updated: 0, deleted: 0, sourceFiles: 0, reviewedQuestions: 2, totalQuestions: 2, lastCorrectionAt: null },
+    }),
+  );
+
+  await page.goto("/giao-vien/dashboard");
+
+  // Stage 1: Overview Dashboard Analytics
+  await expect(page.getByText("Tổng lượt làm đề").first()).toBeVisible();
+  await expect(page.getByText("Bài chờ chấm tay").first()).toBeVisible();
+  await expect(page.getByText("Điểm TB (Thang 10)").first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Bài nộp cần chấm điểm ngay" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Thống kê hiệu suất theo Đề thi" })).toBeVisible();
+  await expect(page.getByText("Đề kiểm tra Giữa kỳ Lớp 8").first()).toBeVisible();
+
+  // Stage 2: Student Directory & 360 Profile Modal
+  await page.getByRole("button", { name: "Học viên & Tiến độ" }).click();
+  await expect(page.getByRole("heading", { name: "Danh sách & Thống kê Học viên" })).toBeVisible();
+  await expect(page.getByText("Nguyễn Văn An").first()).toBeVisible();
+  await expect(page.getByText("Secondary Boost")).toBeVisible();
+  await expect(page.getByText("65%")).toBeVisible();
+
+  await page.getByRole("button", { name: "Xem hồ sơ & lịch sử" }).first().click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Hồ sơ học tập · Nguyễn Văn An/ })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Phân tích năng lực theo dạng bài (Điểm mạnh & Điểm yếu)" }),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Phát âm", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Ngữ pháp", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog").getByText("Cần ôn lại phần phát âm nguyên âm đôi.")).toBeVisible();
+  await page.getByRole("button", { name: "Đóng cửa sổ" }).click();
+
+  // Stage 3: Attempt Filters & Question Error Rate Analysis
+  await page.getByRole("button", { name: "Bài làm học viên" }).click();
+  await expect(page.getByRole("heading", { name: "Theo dõi và chấm bài" })).toBeVisible();
+  await expect(page.getByText(/Phân tích câu hỏi học viên hay làm sai nhất/)).toBeVisible();
+  await page.getByText(/Phân tích câu hỏi học viên hay làm sai nhất/).click();
+  await expect(page.getByText(/Hay nhầm sang:/)).toBeVisible();
+});
+

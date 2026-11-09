@@ -101,6 +101,9 @@ export class StaffContentController {
   @Get("exams") exams(@CurrentUser() user: AccessPayload) {
     return this.service.staffExams(user.sub, user.role);
   }
+  @Get("students") students() {
+    return this.service.staffStudents();
+  }
   @Get("attempts") attempts(@CurrentUser() user: AccessPayload) {
     return this.service.staffAttempts(user.sub, user.role);
   }

@@ -2084,6 +2084,98 @@ export class ContentService {
     }
   }
 
+  async staffStudents() {
+    const students = await this.prisma.user.findMany({
+      where: { role: Role.STUDENT },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        isActive: true,
+        createdAt: true,
+        enrollments: {
+          include: {
+            course: {
+              select: { id: true, title: true, slug: true, level: true, ageRange: true },
+            },
+          },
+        },
+        examAttempts: {
+          select: {
+            id: true,
+            examId: true,
+            status: true,
+            answers: true,
+            earned: true,
+            possible: true,
+            manualEarned: true,
+            manualPossible: true,
+            manualScores: true,
+            pending: true,
+            teacherFeedback: true,
+            submittedAt: true,
+            createdAt: true,
+            updatedAt: true,
+            exam: {
+              select: {
+                id: true,
+                title: true,
+                slug: true,
+                schoolLevel: true,
+                grade: true,
+                questions: {
+                  select: {
+                    position: true,
+                    content: true,
+                    options: true,
+                    interactionData: true,
+                    kind: true,
+                    taskType: true,
+                    answer: true,
+                    points: true,
+                    sourcePage: true,
+                    section: true,
+                  },
+                  orderBy: { position: "asc" },
+                },
+              },
+            },
+          },
+          orderBy: { updatedAt: "desc" },
+          take: 50,
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 250,
+    });
+
+    return students.map((student) => ({
+      ...student,
+      examAttempts: student.examAttempts
+        .filter((attempt) => {
+          if (attempt.status !== AttemptStatus.DRAFT) return true;
+          const cleaned = cleanAnswers(attempt.answers || {});
+          return Object.values(cleaned).some((val) => val.trim().length > 0);
+        })
+        .map((attempt) => {
+          if (attempt.status === AttemptStatus.DRAFT) return attempt;
+          const score = this.scoreAttempt(
+            attempt.exam.questions,
+            cleanAnswers(attempt.answers),
+            manualScoresRecord(attempt.manualScores),
+          );
+          return {
+            ...attempt,
+            earned: score.earned,
+            possible: score.possible,
+            manualEarned: score.manualEarned,
+            manualPossible: score.manualPossible,
+            pending: score.pending,
+          };
+        }),
+    }));
+  }
+
   async staffAttempts(userId: string, role: Role) {
     const scopeWhere: Prisma.ExamAttemptWhereInput =
       role === Role.ADMIN ? {} : { exam: { is: { createdById: userId } } };
@@ -2092,6 +2184,7 @@ export class ContentService {
       where: scopeWhere,
       select: {
         id: true,
+        userId: true,
         participantName: true,
         status: true,
         answers: true,
@@ -2103,12 +2196,15 @@ export class ContentService {
         pending: true,
         teacherFeedback: true,
         submittedAt: true,
+        createdAt: true,
         updatedAt: true,
-        user: { select: { fullName: true, email: true } },
+        user: { select: { id: true, fullName: true, email: true } },
         exam: {
           select: {
             id: true,
             title: true,
+            schoolLevel: true,
+            grade: true,
             questions: {
               select: {
                 position: true,
@@ -2172,7 +2268,11 @@ export class ContentService {
       include: { exam: { include: { questions: true } } },
     });
     if (!attempt) throw new NotFoundException("Không tìm thấy bài làm.");
-    if (role !== Role.ADMIN && attempt.exam.createdById !== userId)
+    if (
+      role !== Role.ADMIN &&
+      attempt.exam.createdById !== userId &&
+      attempt.exam.status !== ContentStatus.PUBLISHED
+    )
       throw new ForbiddenException();
     if (attempt.status === AttemptStatus.DRAFT)
       throw new BadRequestException("Học viên chưa nộp bài.");

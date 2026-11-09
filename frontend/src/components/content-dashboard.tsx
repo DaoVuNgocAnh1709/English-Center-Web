@@ -178,6 +178,7 @@ type AttemptQuestion = {
 };
 type StaffAttempt = {
   id: string;
+  userId?: string | null;
   participantName: string | null;
   status: "DRAFT" | "SUBMITTED" | "GRADED";
   answers: unknown;
@@ -189,9 +190,48 @@ type StaffAttempt = {
   pending: number;
   teacherFeedback: string | null;
   submittedAt: string | null;
+  createdAt?: string;
   updatedAt: string;
-  user: { fullName: string; email: string } | null;
-  exam: { id: string; title: string; questions: AttemptQuestion[] };
+  user: { id?: string; fullName: string; email: string } | null;
+  exam: { id: string; title: string; schoolLevel?: string; grade?: number; questions: AttemptQuestion[] };
+};
+type StaffStudentAttempt = {
+  id: string;
+  examId: string;
+  status: "DRAFT" | "SUBMITTED" | "GRADED";
+  answers: unknown;
+  earned: number;
+  possible: number;
+  manualEarned: number;
+  manualPossible: number;
+  manualScores: unknown;
+  pending: number;
+  teacherFeedback: string | null;
+  submittedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  exam: {
+    id: string;
+    title: string;
+    slug: string;
+    schoolLevel: string;
+    grade: number;
+    questions: AttemptQuestion[];
+  };
+};
+type StaffStudent = {
+  id: string;
+  fullName: string;
+  email: string;
+  isActive: boolean;
+  createdAt: string;
+  enrollments: {
+    id: string;
+    progress: number;
+    status: string;
+    course: { id: string; title: string; slug: string; level: string | null; ageRange: string };
+  }[];
+  examAttempts: StaffStudentAttempt[];
 };
 const api = process.env.NEXT_PUBLIC_API_URL || "/api";
 const statusLabels: Record<string, string> = {
@@ -270,6 +310,7 @@ export function ContentDashboard({ role }: { role: Role }) {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [adminCourses, setAdminCourses] = useState<AdminCourse[]>([]);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>([]);
+  const [students, setStudents] = useState<StaffStudent[]>([]);
   const [attempts, setAttempts] = useState<StaffAttempt[]>([]);
   const [storage, setStorage] = useState<StorageStats | null>(null);
   const [recognitionLearning, setRecognitionLearning] = useState<RecognitionLearningStats | null>(null);
@@ -279,17 +320,25 @@ export function ContentDashboard({ role }: { role: Role }) {
   const [error, setError] = useState("");
   const [selectedExam, setSelectedExam] = useState<string | null>(null);
   const [selectedAttempt, setSelectedAttempt] = useState<string | null>(null);
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null);
+  const [studentSearch, setStudentSearch] = useState("");
+  const [studentFilterMode, setStudentFilterMode] = useState<"ALL" | "ACTIVE_ATTEMPTS" | "NEEDS_GRADING" | "ENROLLED">("ALL");
+  const [attemptSearch, setAttemptSearch] = useState("");
+  const [attemptExamFilter, setAttemptExamFilter] = useState("ALL");
+  const [attemptStatusFilter, setAttemptStatusFilter] = useState<"ALL" | "SUBMITTED" | "GRADED" | "DRAFT">("ALL");
+  const [analyticsExamId, setAnalyticsExamId] = useState<string>("ALL");
   const [selectedSourceId, setSelectedSourceId] = useState("");
   const uploadLock = useRef(false);
   const selectedSource = sources.find((source) => source.id === selectedSourceId);
 
   const reload = useCallback(async () => {
-    const [sourceList, examList, materialList, attemptList, storageInfo, learningInfo] = await Promise.all(
+    const [sourceList, examList, materialList, attemptList, studentList, storageInfo, learningInfo] = await Promise.all(
       [
         request("/staff/content/sources"),
         request("/staff/content/exams"),
         request("/staff/content/materials"),
         request("/staff/content/attempts"),
+        request("/staff/content/students").catch(() => []),
         request("/staff/content/storage"),
         request("/staff/content/recognition-learning"),
       ],
@@ -298,6 +347,7 @@ export function ContentDashboard({ role }: { role: Role }) {
     setExams(examList);
     setMaterials(materialList);
     setAttempts(attemptList);
+    setStudents(Array.isArray(studentList) ? studentList : []);
     setStorage(storageInfo);
     setRecognitionLearning(learningInfo);
     if (role === "ADMIN") {
@@ -532,6 +582,7 @@ export function ContentDashboard({ role }: { role: Role }) {
   }
   const nav = [
     ["overview", "Tổng quan", LayoutDashboard],
+    ["students", "Học viên & Tiến độ", Users],
     ["exams", "Luyện đề", ClipboardList],
     ["attempts", "Bài làm học viên", FileCheck2],
     ["materials", "Thư viện tài liệu", BookOpen],
@@ -548,6 +599,22 @@ export function ContentDashboard({ role }: { role: Role }) {
       <div className="container-shell py-20">Đang tải khu quản trị...</div>
     );
   const userInitials = user.fullName.trim().split(/\s+/).slice(-2).map((part) => part[0]?.toUpperCase()).join("");
+  const submittedOrGradedAttempts = attempts.filter((item) => item.status !== "DRAFT");
+  const pendingGradingAttempts = attempts.filter((item) => item.status === "SUBMITTED");
+  const draftAttempts = attempts.filter((item) => item.status === "DRAFT");
+  const scoredScale10List = submittedOrGradedAttempts
+    .map((item) => {
+      const totalPossible = item.possible + item.manualPossible;
+      const totalEarned = item.earned + item.manualEarned;
+      return totalPossible > 0 ? (totalEarned / totalPossible) * 10 : null;
+    })
+    .filter((val): val is number => val !== null);
+  const avgScoreScale10 =
+    scoredScale10List.length > 0
+      ? (scoredScale10List.reduce((sum, val) => sum + val, 0) / scoredScale10List.length).toFixed(1)
+      : "—";
+  const activeStudentCount = students.filter((student) => student.examAttempts.length > 0).length;
+
   return (
     <div className="workspace-shell">
       <aside className="workspace-sidebar relative shrink-0 px-5 py-6 lg:pb-24">
@@ -614,7 +681,7 @@ export function ContentDashboard({ role }: { role: Role }) {
       <div className="workspace-main px-5 py-7 md:px-10 md:py-9">
         <div className="mx-auto max-w-6xl">
           <div className="workspace-topbar mb-7">
-            <div><h1 className="workspace-title">{nav.find((item) => item[0] === tab)?.[1]}</h1><p className="workspace-subtitle">{tab === "overview" ? "Theo dõi nội dung, học viên và các việc cần xử lý trong một nơi." : tab === "exams" ? "Tạo đề từ PDF, rà soát câu hỏi và quản lý trạng thái xuất bản." : tab === "attempts" ? "Theo dõi tiến độ, kết quả tự động và các câu đang chờ chấm tay." : tab === "materials" ? "Tổ chức học liệu theo cấp học, danh mục và trạng thái duyệt." : "Xử lý thông tin mới và cập nhật trạng thái liên hệ."}</p></div>
+            <div><h1 className="workspace-title">{nav.find((item) => item[0] === tab)?.[1]}</h1><p className="workspace-subtitle">{tab === "overview" ? "Theo dõi nội dung, học viên và các việc cần xử lý trong một nơi." : tab === "students" ? "Tra cứu từng học viên, số đề đã luyện, phân tích điểm mạnh yếu và lịch sử làm bài." : tab === "exams" ? "Tạo đề từ PDF, rà soát câu hỏi và quản lý trạng thái xuất bản." : tab === "attempts" ? "Theo dõi tiến độ, kết quả tự động và các câu đang chờ chấm tay." : tab === "materials" ? "Tổ chức học liệu theo cấp học, danh mục và trạng thái duyệt." : "Xử lý thông tin mới và cập nhật trạng thái liên hệ."}</p></div>
             <div className="flex items-center gap-3 shrink-0">
               <button
                 type="button"
@@ -644,27 +711,54 @@ export function ContentDashboard({ role }: { role: Role }) {
             </p>
           )}
           {tab === "overview" && (
-            <div>
-              <div className="metric-strip">
-              <Summary value={exams.length} label="Đề luyện tập" />
-              <Summary value={materials.length} label="Tài liệu" />
-              <Summary
-                value={
-                  role === "ADMIN"
-                    ? applications.filter((item) => item.status === "NEW")
-                        .length
-                    : sources.length
-                }
-                label={role === "ADMIN" ? "Hồ sơ mới" : "PDF nguồn"}
-              />
+            <div className="space-y-6">
+              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                <Summary
+                  value={exams.length}
+                  label="Đề luyện tập"
+                  subtext={`${exams.filter((e) => e.status === "PUBLISHED").length} xuất bản · ${exams.filter((e) => e.status !== "PUBLISHED").length} nháp/chờ duyệt`}
+                />
+                <Summary
+                  value={attempts.length}
+                  label="Tổng lượt làm đề"
+                  subtext={`${submittedOrGradedAttempts.length} đã nộp · ${draftAttempts.length} đang làm`}
+                />
+                <Summary
+                  value={pendingGradingAttempts.length}
+                  label="Bài chờ chấm tay"
+                  subtext={pendingGradingAttempts.length > 0 ? "Cần giáo viên chấm điểm tự luận" : "Đã chấm hết bài nộp"}
+                  highlight={pendingGradingAttempts.length > 0 ? "warning" : "normal"}
+                />
+                <Summary
+                  value={avgScoreScale10}
+                  label="Điểm TB (Thang 10)"
+                  subtext={scoredScale10List.length > 0 ? `Tính trên ${scoredScale10List.length} bài đã nộp` : "Chưa có bài hoàn thành"}
+                />
+                <Summary
+                  value={`${activeStudentCount}/${students.length}`}
+                  label="Học viên luyện đề"
+                  subtext={`${students.length} tài khoản học viên trong hệ thống`}
+                />
+                <Summary
+                  value={
+                    role === "ADMIN"
+                      ? applications.filter((item) => item.status === "NEW").length
+                      : sources.length
+                  }
+                  label={role === "ADMIN" ? "Hồ sơ mới" : "PDF nguồn"}
+                  subtext={`${materials.length} tài liệu học tập`}
+                />
               </div>
-              <div className="workspace-panel mt-6 grid gap-7 p-6 md:grid-cols-[1fr_auto] md:items-center md:p-8">
-                <div><h2 className="text-xl font-bold text-[#092b4c]">Bắt đầu công việc</h2>
-                <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-600">
-                  Giáo viên tải PDF, chọn trang, nhập đáp án và gửi duyệt. Admin
-                  kiểm tra lại PDF, đáp án rồi xuất bản. Tài liệu cũng cần duyệt
-                  trước khi hiển thị công khai.
-                </p></div>
+
+              <div className="workspace-panel grid gap-7 p-6 md:grid-cols-[1fr_auto] md:items-center md:p-8">
+                <div>
+                  <h2 className="text-xl font-bold text-[#092b4c]">Bắt đầu công việc</h2>
+                  <p className="mt-2 max-w-2xl text-sm leading-7 text-slate-600">
+                    Giáo viên tải PDF, chọn trang, nhập đáp án và gửi duyệt. Admin
+                    kiểm tra lại PDF, đáp án rồi xuất bản. Tài liệu cũng cần duyệt
+                    trước khi hiển thị công khai.
+                  </p>
+                </div>
                 <div className="flex flex-wrap gap-3 md:justify-end">
                   <button
                     className="btn-primary"
@@ -674,14 +768,241 @@ export function ContentDashboard({ role }: { role: Role }) {
                   </button>
                   <button
                     className="btn-outline"
+                    onClick={() => setTab("students")}
+                  >
+                    Xem tiến độ học viên
+                  </button>
+                  <button
+                    className="btn-outline"
                     onClick={() => setTab("materials")}
                   >
                     Đăng tài liệu
                   </button>
                 </div>
               </div>
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <section className="soft-card p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-bold text-[#092b4c]">
+                        Bài nộp cần chấm điểm ngay
+                      </h2>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        Các bài có câu tự luận hoặc viết lại câu đang chờ giáo viên chấm tay.
+                      </p>
+                    </div>
+                    <span className={`rounded-full px-3 py-1 text-xs font-extrabold ${pendingGradingAttempts.length > 0 ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700"}`}>
+                      {pendingGradingAttempts.length} bài chờ
+                    </span>
+                  </div>
+                  <div className="mt-4 space-y-2.5">
+                    {pendingGradingAttempts.slice(0, 5).map((item) => (
+                      <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200/80 bg-amber-50/40 p-3.5 text-sm">
+                        <div className="min-w-0">
+                          <strong className="block truncate text-[#092b4c]">
+                            {item.user?.fullName || item.participantName || "Khách"}
+                          </strong>
+                          <span className="block truncate text-xs text-slate-600">
+                            {item.exam.title} · Còn {item.pending} câu chờ chấm
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedAttempt(item.id)}
+                          className="btn-primary min-h-9 shrink-0 px-3 text-xs"
+                        >
+                          Chấm ngay
+                        </button>
+                      </div>
+                    ))}
+                    {pendingGradingAttempts.length === 0 && (
+                      <div className="rounded-xl bg-emerald-50/70 p-4 text-sm text-emerald-800">
+                        Tất cả các bài đã nộp đều được chấm điểm đầy đủ.
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="soft-card p-6">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="text-lg font-bold text-[#092b4c]">
+                        Hoạt động học viên gần đây
+                      </h2>
+                      <p className="mt-0.5 text-xs text-slate-500">
+                        Các lượt làm đề mới nhất của học viên và khách trên hệ thống.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTab("attempts")}
+                      className="text-xs font-bold text-[#123d68] underline underline-offset-4"
+                    >
+                      Xem tất cả ({attempts.length})
+                    </button>
+                  </div>
+                  <div className="mt-4 space-y-2.5">
+                    {attempts.slice(0, 5).map((item) => {
+                      const totalEarned = item.earned + item.manualEarned;
+                      const totalPossible = item.possible + item.manualPossible;
+                      const scale10 = totalPossible > 0 ? ((totalEarned / totalPossible) * 10).toFixed(1) : null;
+                      const matchedStudent = students.find(
+                        (s) => (item.user?.email && s.email === item.user.email) || (item.userId && s.id === item.userId),
+                      );
+                      return (
+                        <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 p-3.5 text-sm">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              {matchedStudent ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedStudentId(matchedStudent.id)}
+                                  className="font-bold text-[#092b4c] hover:text-[#d91f2a] hover:underline"
+                                >
+                                  {item.user?.fullName || matchedStudent.fullName}
+                                </button>
+                              ) : (
+                                <strong className="text-[#092b4c]">
+                                  {item.user?.fullName || item.participantName || "Khách"}
+                                </strong>
+                              )}
+                              <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${item.status === "GRADED" ? "bg-emerald-50 text-emerald-700" : item.status === "SUBMITTED" ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
+                                {item.status === "DRAFT" ? "Đang làm" : statusLabels[item.status]}
+                              </span>
+                            </div>
+                            <span className="mt-0.5 block truncate text-xs text-slate-500">
+                              {item.exam.title} · {formatDate(item.updatedAt)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2.5">
+                            {item.status !== "DRAFT" && scale10 && (
+                              <span className="rounded-lg bg-slate-100 px-2.5 py-1 text-xs font-extrabold text-[#092b4c]">
+                                {scale10}/10
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedAttempt(item.id)}
+                              className="btn-outline min-h-8 px-2.5 text-xs"
+                            >
+                              Chi tiết
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {attempts.length === 0 && (
+                      <p className="text-sm text-slate-500">Chưa có lượt làm đề nào được ghi nhận.</p>
+                    )}
+                  </div>
+                </section>
+              </div>
+
+              <section className="soft-card p-6">
+                <div className="flex flex-wrap items-end justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-bold text-[#092b4c]">
+                      Thống kê hiệu suất theo Đề thi
+                    </h2>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Theo dõi số lượng học sinh tham gia, điểm trung bình (quy đổi thang 10) và tỷ lệ hoàn thành của từng đề.
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 overflow-x-auto">
+                  <table className="w-full min-w-[680px] border-collapse text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                        <th className="py-3 pr-4 font-bold">Tên đề thi</th>
+                        <th className="px-3 py-3 font-bold">Trạng thái</th>
+                        <th className="px-3 py-3 font-bold text-center">Số câu</th>
+                        <th className="px-3 py-3 font-bold text-center">Lượt làm bài</th>
+                        <th className="px-3 py-3 font-bold text-center">Điểm TB (Thang 10)</th>
+                        <th className="px-3 py-3 font-bold text-center">Cao / Thấp nhất</th>
+                        <th className="py-3 pl-3 font-bold text-right">Thao tác</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {exams.map((exam) => {
+                        const examAttempts = attempts.filter((a) => a.exam.id === exam.id);
+                        const finished = examAttempts.filter((a) => a.status !== "DRAFT");
+                        const pendingCount = examAttempts.filter((a) => a.status === "SUBMITTED").length;
+                        const scores10 = finished
+                          .map((a) => {
+                            const p = a.possible + a.manualPossible;
+                            const e = a.earned + a.manualEarned;
+                            return p > 0 ? (e / p) * 10 : null;
+                          })
+                          .filter((v): v is number => v !== null);
+                        const avg10 = scores10.length > 0 ? (scores10.reduce((s, v) => s + v, 0) / scores10.length).toFixed(1) : "—";
+                        const max10 = scores10.length > 0 ? Math.max(...scores10).toFixed(1) : "—";
+                        const min10 = scores10.length > 0 ? Math.min(...scores10).toFixed(1) : "—";
+
+                        return (
+                          <tr key={exam.id} className="hover:bg-slate-50/80">
+                            <td className="py-3.5 pr-4">
+                              <strong className="block text-[#092b4c]">{exam.title}</strong>
+                              <span className="text-xs text-slate-500">{gradeLabel(exam.grade)}</span>
+                            </td>
+                            <td className="px-3 py-3.5">
+                              <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-bold ${exam.status === "PUBLISHED" ? "bg-emerald-50 text-emerald-700" : exam.status === "REVIEW" ? "bg-amber-50 text-amber-800" : "bg-slate-100 text-slate-600"}`}>
+                                {statusLabels[exam.status] || exam.status}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3.5 text-center font-semibold tabular-nums text-slate-700">
+                              {exam.questions.length}
+                            </td>
+                            <td className="px-3 py-3.5 text-center">
+                              <strong className="tabular-nums text-[#092b4c]">{examAttempts.length}</strong>
+                              <span className="block text-[11px] text-slate-500">
+                                {finished.length} nộp · {examAttempts.length - finished.length} nháp
+                                {pendingCount > 0 ? ` · ${pendingCount} chờ chấm` : ""}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3.5 text-center">
+                              <span className={`inline-block rounded-lg px-2.5 py-1 text-xs font-extrabold tabular-nums ${scores10.length > 0 ? "bg-blue-50 text-[#123d68]" : "text-slate-400"}`}>
+                                {avg10}{scores10.length > 0 ? " / 10" : ""}
+                              </span>
+                            </td>
+                            <td className="px-3 py-3.5 text-center text-xs font-semibold tabular-nums text-slate-600">
+                              {scores10.length > 0 ? `${max10} / ${min10}` : "—"}
+                            </td>
+                            <td className="py-3.5 pl-3 text-right">
+                              <div className="flex justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setAttemptExamFilter(exam.id);
+                                    setAnalyticsExamId(exam.id);
+                                    setTab("attempts");
+                                  }}
+                                  className="btn-outline min-h-8 px-2.5 text-xs"
+                                >
+                                  Xem bài làm ({examAttempts.length})
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setSelectedExam(exam.id)}
+                                  className="btn-outline min-h-8 px-2.5 text-xs"
+                                >
+                                  Câu hỏi
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {exams.length === 0 && (
+                    <p className="py-4 text-center text-sm text-slate-500">Chưa có đề luyện tập nào.</p>
+                  )}
+                </div>
+              </section>
+
               {role === "ADMIN" && recognitionLearning && (
-                <section className="workspace-panel mt-6 p-6 md:p-8" aria-labelledby="recognition-learning-title">
+                <section className="workspace-panel p-6 md:p-8" aria-labelledby="recognition-learning-title">
                   <div className="flex flex-wrap items-end justify-between gap-4">
                     <div>
                       <h2 id="recognition-learning-title" className="text-lg font-bold text-[#092b4c]">
@@ -726,6 +1047,18 @@ export function ContentDashboard({ role }: { role: Role }) {
                 </section>
               )}
             </div>
+          )}
+          {tab === "students" && (
+            <StudentsAnalyticsView
+              students={students}
+              attempts={attempts}
+              search={studentSearch}
+              onSearchChange={setStudentSearch}
+              filterMode={studentFilterMode}
+              onFilterModeChange={setStudentFilterMode}
+              onSelectStudent={(id) => setSelectedStudentId(id)}
+              onSelectAttempt={(id) => setSelectedAttempt(id)}
+            />
           )}
           {tab === "exams" && (
             <div className="space-y-6">
@@ -1197,85 +1530,168 @@ export function ContentDashboard({ role }: { role: Role }) {
                     {attempts.length} bài làm
                   </span>
                 </div>
-              </div>
-              {attempts.map((attemptItem) => (
-                <article key={attemptItem.id} className="soft-card p-5">
-                  <div className="flex flex-wrap items-center justify-between gap-4">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h3 className="font-extrabold text-[#092b4c]">
-                          {attemptItem.user?.fullName ||
-                            attemptItem.participantName ||
-                            "Khách"}
-                        </h3>
-                        <span
-                          className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold uppercase ${attemptItem.status === "GRADED" ? "bg-emerald-50 text-emerald-700" : attemptItem.status === "SUBMITTED" ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <label className="text-xs font-semibold text-slate-600">
+                    Tìm theo tên / email học viên
+                    <input
+                      value={attemptSearch}
+                      onChange={(event) => setAttemptSearch(event.target.value)}
+                      placeholder="Nhập tên học viên hoặc email..."
+                      className="field-control mt-1.5 p-2.5 text-sm"
+                    />
+                  </label>
+                  <label className="text-xs font-semibold text-slate-600">
+                    Lọc theo đề thi
+                    <select
+                      value={attemptExamFilter}
+                      onChange={(event) => {
+                        setAttemptExamFilter(event.target.value);
+                        setAnalyticsExamId(event.target.value);
+                      }}
+                      className="field-control mt-1.5 p-2.5 text-sm"
+                    >
+                      <option value="ALL">Tất cả đề thi ({exams.length})</option>
+                      {exams.map((exam) => (
+                        <option key={exam.id} value={exam.id}>
+                          {exam.title}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="text-xs font-semibold text-slate-600 sm:col-span-2 lg:col-span-1">
+                    <span>Trạng thái bài làm</span>
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
+                      {(
+                        [
+                          ["ALL", `Tất cả (${attempts.length})`],
+                          ["SUBMITTED", `Chờ chấm (${attempts.filter((a) => a.status === "SUBMITTED").length})`],
+                          ["GRADED", `Đã chấm (${attempts.filter((a) => a.status === "GRADED").length})`],
+                          ["DRAFT", `Đang làm (${attempts.filter((a) => a.status === "DRAFT").length})`],
+                        ] as const
+                      ).map(([statusKey, label]) => (
+                        <button
+                          key={statusKey}
+                          type="button"
+                          onClick={() => setAttemptStatusFilter(statusKey)}
+                          className={`rounded-lg px-2.5 py-2 text-xs font-bold transition-colors ${attemptStatusFilter === statusKey ? "bg-[#123d68] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
                         >
-                          {attemptItem.status === "DRAFT"
-                            ? "Đang làm"
-                            : statusLabels[attemptItem.status]}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-sm text-slate-600">
-                        {attemptItem.exam.title}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        {answeredCount(attemptItem.answers)}/
-                        {attemptItem.exam.questions.length} câu đã trả lời · Cập
-                        nhật {formatDate(attemptItem.updatedAt)}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      {attemptItem.status !== "DRAFT" && (
-                        <strong className="text-sm text-[#092b4c]">
-                          {attemptItem.earned + attemptItem.manualEarned}/
-                          {attemptItem.possible + attemptItem.manualPossible}{" "}
-                          điểm
-                        </strong>
-                      )}
-                      <button
-                        className="btn-outline min-h-10 px-4"
-                        onClick={() => setSelectedAttempt(attemptItem.id)}
-                      >
-                        {attemptItem.status === "DRAFT"
-                          ? "Xem tiến độ"
-                          : "Xem / chấm bài"}
-                      </button>
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
-                </article>
-              ))}
-              {selectedAttempt &&
-                (() => {
-                  const attemptItem = attempts.find(
-                    (item) => item.id === selectedAttempt,
-                  );
-                  return attemptItem ? (
-                    <Modal
-                      open
-                      size="xl"
-                      title={
-                        attemptItem.user?.fullName ||
-                        attemptItem.participantName ||
-                        "Bài làm của khách"
-                      }
-                      description={`${attemptItem.exam.title} · ${answeredCount(attemptItem.answers)}/${attemptItem.exam.questions.length} câu đã trả lời`}
-                      onClose={() => setSelectedAttempt(null)}
-                    >
-                      <AttemptReview
-                        attempt={attemptItem}
-                        busy={busy}
-                        onGrade={(scores, feedback) =>
-                          patch(
-                            `/staff/content/attempts/${attemptItem.id}/grade`,
-                            { scores, feedback },
-                            "Đã lưu điểm chấm tay và nhận xét.",
-                          )
-                        }
-                      />
-                    </Modal>
-                  ) : null;
-                })()}
+                </div>
+              </div>
+
+              <QuestionErrorAnalyticsPanel
+                attempts={attempts}
+                exams={exams}
+                selectedExamId={analyticsExamId}
+                onSelectExamId={(val) => {
+                  setAnalyticsExamId(val);
+                  setAttemptExamFilter(val);
+                }}
+              />
+
+              {(() => {
+                const q = attemptSearch.trim().toLocaleLowerCase("vi");
+                const filteredAttempts = attempts.filter((item) => {
+                  if (attemptExamFilter !== "ALL" && item.exam.id !== attemptExamFilter) return false;
+                  if (attemptStatusFilter !== "ALL" && item.status !== attemptStatusFilter) return false;
+                  if (q) {
+                    const name = (item.user?.fullName || item.participantName || "Khách").toLocaleLowerCase("vi");
+                    const email = (item.user?.email || "").toLocaleLowerCase("vi");
+                    const examTitle = item.exam.title.toLocaleLowerCase("vi");
+                    if (!name.includes(q) && !email.includes(q) && !examTitle.includes(q)) return false;
+                  }
+                  return true;
+                });
+
+                return (
+                  <>
+                    {filteredAttempts.map((attemptItem) => {
+                      const totalEarned = attemptItem.earned + attemptItem.manualEarned;
+                      const totalPossible = attemptItem.possible + attemptItem.manualPossible;
+                      const scale10 = totalPossible > 0 ? ((totalEarned / totalPossible) * 10).toFixed(1) : null;
+                      const matchedStudent = students.find(
+                        (s) =>
+                          (attemptItem.user?.email && s.email === attemptItem.user.email) ||
+                          (attemptItem.userId && s.id === attemptItem.userId),
+                      );
+                      return (
+                        <article key={attemptItem.id} className="soft-card p-5">
+                          <div className="flex flex-wrap items-center justify-between gap-4">
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <h3 className="font-extrabold text-[#092b4c]">
+                                  {attemptItem.user?.fullName ||
+                                    attemptItem.participantName ||
+                                    "Khách"}
+                                </h3>
+                                {attemptItem.user?.email && (
+                                  <span className="text-xs text-slate-400">({attemptItem.user.email})</span>
+                                )}
+                                <span
+                                  className={`rounded-full px-2.5 py-1 text-[11px] font-extrabold uppercase ${attemptItem.status === "GRADED" ? "bg-emerald-50 text-emerald-700" : attemptItem.status === "SUBMITTED" ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}
+                                >
+                                  {attemptItem.status === "DRAFT"
+                                    ? "Đang làm"
+                                    : statusLabels[attemptItem.status]}
+                                </span>
+                              </div>
+                              <p className="mt-1 text-sm text-slate-600">
+                                {attemptItem.exam.title}
+                              </p>
+                              <p className="mt-1 text-xs text-slate-400">
+                                {answeredCount(attemptItem.answers)}/
+                                {attemptItem.exam.questions.length} câu đã trả lời · Cập
+                                nhật {formatDate(attemptItem.updatedAt)}
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-3">
+                              {attemptItem.status !== "DRAFT" && (
+                                <div className="text-right">
+                                  <strong className="block text-sm text-[#092b4c]">
+                                    {totalEarned}/{totalPossible} điểm
+                                  </strong>
+                                  {scale10 && (
+                                    <span className="block text-xs font-bold text-[#123d68]">
+                                      Thang 10: {scale10}/10
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                              {matchedStudent && (
+                                <button
+                                  type="button"
+                                  className="btn-outline min-h-10 px-3 text-xs"
+                                  onClick={() => setSelectedStudentId(matchedStudent.id)}
+                                >
+                                  Hồ sơ học viên
+                                </button>
+                              )}
+                              <button
+                                className="btn-outline min-h-10 px-4"
+                                onClick={() => setSelectedAttempt(attemptItem.id)}
+                              >
+                                {attemptItem.status === "DRAFT"
+                                  ? "Xem tiến độ"
+                                  : "Xem / chấm bài"}
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                    {!filteredAttempts.length && attempts.length > 0 && (
+                      <div className="soft-card p-8 text-center text-sm text-slate-500">
+                        Không tìm thấy bài làm nào khớp với bộ lọc hiện tại.
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               {!attempts.length && (
                 <div className="soft-card p-8 text-center text-sm text-slate-500">
                   Chưa có học viên hoặc khách bắt đầu làm đề.
@@ -1851,6 +2267,68 @@ export function ContentDashboard({ role }: { role: Role }) {
               </div>
             </div>
           )}
+          {selectedStudentId &&
+            (() => {
+              const studentItem = students.find((s) => s.id === selectedStudentId);
+              return studentItem ? (
+                <Modal
+                  open
+                  size="xl"
+                  title={`Hồ sơ học tập · ${studentItem.fullName}`}
+                  description={`${studentItem.email} · ${studentItem.examAttempts.length} lượt luyện đề`}
+                  onClose={() => setSelectedStudentId(null)}
+                >
+                  <StudentAnalyticsModal
+                    student={studentItem}
+                    onSelectAttempt={(attemptId) => {
+                      setSelectedStudentId(null);
+                      setSelectedAttempt(attemptId);
+                    }}
+                  />
+                </Modal>
+              ) : null;
+            })()}
+          {selectedAttempt &&
+            (() => {
+              const directAttempt = attempts.find((item) => item.id === selectedAttempt);
+              const fallbackStudentAttempt = !directAttempt
+                ? students
+                    .flatMap((s) =>
+                      s.examAttempts.map((a) => ({
+                        ...a,
+                        participantName: s.fullName,
+                        user: { id: s.id, fullName: s.fullName, email: s.email },
+                      })),
+                    )
+                    .find((item) => item.id === selectedAttempt)
+                : null;
+              const attemptItem: StaffAttempt | undefined = directAttempt || fallbackStudentAttempt || undefined;
+              return attemptItem ? (
+                <Modal
+                  open
+                  size="xl"
+                  title={
+                    attemptItem.user?.fullName ||
+                    attemptItem.participantName ||
+                    "Bài làm của khách"
+                  }
+                  description={`${attemptItem.exam.title} · ${answeredCount(attemptItem.answers)}/${attemptItem.exam.questions.length} câu đã trả lời`}
+                  onClose={() => setSelectedAttempt(null)}
+                >
+                  <AttemptReview
+                    attempt={attemptItem}
+                    busy={busy}
+                    onGrade={(scores, feedback) =>
+                      patch(
+                        `/staff/content/attempts/${attemptItem.id}/grade`,
+                        { scores, feedback },
+                        "Đã lưu điểm chấm tay và nhận xét.",
+                      )
+                    }
+                  />
+                </Modal>
+              ) : null;
+            })()}
         </div>
       </div>
     </div>
@@ -2174,12 +2652,743 @@ function AttemptReview({
   );
 }
 
-function Summary({ value, label }: { value: number; label: string }) {
+function Summary({
+  value,
+  label,
+  subtext,
+  highlight = "normal",
+}: {
+  value: number | string;
+  label: string;
+  subtext?: string;
+  highlight?: "normal" | "warning";
+}) {
   return (
-    <div className="metric-cell">
-      <strong>{value}</strong>
-      <p className="mt-3 text-sm font-semibold text-slate-500">{label}</p>
+    <div
+      className={`metric-cell ${
+        highlight === "warning" ? "border-amber-300 bg-amber-50/40" : ""
+      }`}
+    >
+      <strong className={highlight === "warning" ? "text-amber-700" : ""}>
+        {value}
+      </strong>
+      <p className="mt-2 text-sm font-bold text-[#092b4c]">{label}</p>
+      {subtext && (
+        <p className="mt-1 text-xs leading-5 text-slate-500">{subtext}</p>
+      )}
     </div>
+  );
+}
+
+function StudentsAnalyticsView({
+  students,
+  attempts,
+  search,
+  onSearchChange,
+  filterMode,
+  onFilterModeChange,
+  onSelectStudent,
+  onSelectAttempt,
+}: {
+  students: StaffStudent[];
+  attempts: StaffAttempt[];
+  search: string;
+  onSearchChange: (val: string) => void;
+  filterMode: "ALL" | "ACTIVE_ATTEMPTS" | "NEEDS_GRADING" | "ENROLLED";
+  onFilterModeChange: (val: "ALL" | "ACTIVE_ATTEMPTS" | "NEEDS_GRADING" | "ENROLLED") => void;
+  onSelectStudent: (id: string) => void;
+  onSelectAttempt: (id: string) => void;
+}) {
+  const studentsWithAttempts = students.filter((s) => s.examAttempts.length > 0);
+  const studentsNeedingGrade = students.filter((s) =>
+    s.examAttempts.some((a) => a.status === "SUBMITTED"),
+  );
+  const studentsEnrolled = students.filter((s) => s.enrollments.length > 0);
+  const guestAttempts = attempts.filter((a) => !a.user && !a.userId);
+
+  const query = search.trim().toLocaleLowerCase("vi");
+  const filteredStudents = students.filter((s) => {
+    if (filterMode === "ACTIVE_ATTEMPTS" && s.examAttempts.length === 0) return false;
+    if (filterMode === "NEEDS_GRADING" && !s.examAttempts.some((a) => a.status === "SUBMITTED"))
+      return false;
+    if (filterMode === "ENROLLED" && s.enrollments.length === 0) return false;
+    if (query) {
+      const matchName = s.fullName.toLocaleLowerCase("vi").includes(query);
+      const matchEmail = s.email.toLocaleLowerCase("vi").includes(query);
+      const matchCourse = s.enrollments.some((e) =>
+        e.course.title.toLocaleLowerCase("vi").includes(query),
+      );
+      if (!matchName && !matchEmail && !matchCourse) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <Summary
+          value={students.length}
+          label="Tổng số học viên"
+          subtext="Tài khoản học viên đã đăng ký"
+        />
+        <Summary
+          value={studentsWithAttempts.length}
+          label="Đã tham gia luyện đề"
+          subtext={`${students.reduce((sum, s) => sum + s.examAttempts.length, 0)} lượt làm bài từ học viên`}
+        />
+        <Summary
+          value={studentsNeedingGrade.length}
+          label="Học viên có bài chờ chấm"
+          subtext={studentsNeedingGrade.length > 0 ? "Cần giáo viên chấm câu tự luận" : "Đã chấm hoàn tất"}
+          highlight={studentsNeedingGrade.length > 0 ? "warning" : "normal"}
+        />
+        <Summary
+          value={studentsEnrolled.length}
+          label="Đang học khóa chính khóa"
+          subtext="Đã được ghi danh vào lớp học"
+        />
+      </div>
+
+      <div className="soft-card p-6">
+        <div className="flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold text-[#092b4c]">
+              Danh sách & Thống kê Học viên
+            </h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Xem số lượng đề từng bạn đã làm, điểm trung bình, tiến độ khóa học và phân tích điểm mạnh / điểm yếu.
+            </p>
+          </div>
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+            Hiển thị {filteredStudents.length}/{students.length} học viên
+          </span>
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-end justify-between gap-3">
+          <label className="min-w-72 flex-1 text-xs font-semibold text-slate-600">
+            Tìm kiếm học viên
+            <input
+              value={search}
+              onChange={(event) => onSearchChange(event.target.value)}
+              placeholder="Tìm theo họ tên, email hoặc tên khóa học..."
+              className="field-control mt-1.5 p-2.5 text-sm"
+            />
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {(
+              [
+                ["ALL", `Tất cả (${students.length})`],
+                ["ACTIVE_ATTEMPTS", `Đã làm đề (${studentsWithAttempts.length})`],
+                ["NEEDS_GRADING", `Chờ chấm (${studentsNeedingGrade.length})`],
+                ["ENROLLED", `Đang học khóa học (${studentsEnrolled.length})`],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => onFilterModeChange(key)}
+                className={`min-h-10 rounded-xl px-3.5 text-xs font-bold transition-colors ${
+                  filterMode === key
+                    ? "bg-[#123d68] text-white"
+                    : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-5 overflow-x-auto">
+          <table className="w-full min-w-[780px] border-collapse text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
+                <th className="py-3 pr-4 font-bold">Học viên</th>
+                <th className="px-3 py-3 font-bold">Khóa đang học</th>
+                <th className="px-3 py-3 font-bold text-center">Số đề đã làm</th>
+                <th className="px-3 py-3 font-bold text-center">Điểm TB (Thang 10)</th>
+                <th className="px-3 py-3 font-bold text-center">Cao nhất</th>
+                <th className="px-3 py-3 font-bold">Hoạt động gần nhất</th>
+                <th className="py-3 pl-3 font-bold text-right">Chi tiết</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {filteredStudents.map((student) => {
+                const finished = student.examAttempts.filter((a) => a.status !== "DRAFT");
+                const drafts = student.examAttempts.filter((a) => a.status === "DRAFT");
+                const pendingCount = student.examAttempts.filter((a) => a.status === "SUBMITTED").length;
+                const scores10 = finished
+                  .map((a) => {
+                    const p = a.possible + a.manualPossible;
+                    const e = a.earned + a.manualEarned;
+                    return p > 0 ? (e / p) * 10 : null;
+                  })
+                  .filter((v): v is number => v !== null);
+                const avg10 =
+                  scores10.length > 0
+                    ? (scores10.reduce((sum, v) => sum + v, 0) / scores10.length).toFixed(1)
+                    : null;
+                const max10 = scores10.length > 0 ? Math.max(...scores10).toFixed(1) : null;
+                const latestAttempt = student.examAttempts[0] || null;
+
+                return (
+                  <tr key={student.id} className="hover:bg-slate-50/80">
+                    <td className="py-4 pr-4">
+                      <strong className="block text-[#092b4c]">{student.fullName}</strong>
+                      <span className="text-xs text-slate-500">{student.email}</span>
+                    </td>
+                    <td className="px-3 py-4">
+                      {student.enrollments.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {student.enrollments.map((enr) => (
+                            <div key={enr.id} className="text-xs">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-semibold text-slate-700">{enr.course.title}</span>
+                                <span className="font-bold text-[#123d68]">{enr.progress}%</span>
+                              </div>
+                              <div className="mt-1 h-1.5 w-28 overflow-hidden rounded-full bg-slate-100">
+                                <div
+                                  className="h-full rounded-full bg-[#123d68]"
+                                  style={{ width: `${enr.progress}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">Chưa ghi danh khóa học</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-4 text-center">
+                      <strong className="text-base tabular-nums text-[#092b4c]">
+                        {student.examAttempts.length}
+                      </strong>
+                      <span className="block text-[11px] text-slate-500">
+                        {finished.length} hoàn thành
+                        {drafts.length > 0 ? ` · ${drafts.length} đang làm` : ""}
+                      </span>
+                      {pendingCount > 0 && (
+                        <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold text-amber-800">
+                          {pendingCount} bài chờ chấm
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-4 text-center">
+                      {avg10 ? (
+                        <span
+                          className={`inline-block rounded-lg px-2.5 py-1 text-xs font-extrabold tabular-nums ${
+                            Number(avg10) >= 8
+                              ? "bg-emerald-50 text-emerald-700"
+                              : Number(avg10) >= 5
+                                ? "bg-blue-50 text-[#123d68]"
+                                : "bg-red-50 text-red-700"
+                          }`}
+                        >
+                          {avg10} / 10
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">Chưa có điểm</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-4 text-center font-bold tabular-nums text-slate-700">
+                      {max10 ? `${max10} / 10` : "—"}
+                    </td>
+                    <td className="px-3 py-4 text-xs text-slate-600">
+                      {latestAttempt ? (
+                        <div>
+                          <strong className="block truncate max-w-44 text-[#092b4c]">
+                            {latestAttempt.exam.title}
+                          </strong>
+                          <span className="text-slate-400">
+                            {formatDate(latestAttempt.updatedAt)}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">Chưa làm đề nào</span>
+                      )}
+                    </td>
+                    <td className="py-4 pl-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onSelectStudent(student.id)}
+                        className="btn-outline min-h-9 px-3 text-xs font-bold"
+                      >
+                        Xem hồ sơ & lịch sử
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {filteredStudents.length === 0 && (
+            <p className="py-8 text-center text-sm text-slate-500">
+              Không tìm thấy học viên nào phù hợp với bộ lọc.
+            </p>
+          )}
+        </div>
+      </div>
+
+      {guestAttempts.length > 0 && (
+        <div className="soft-card p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="text-base font-bold text-[#092b4c]">
+                Lượt làm bài của Khách (Chưa đăng nhập tài khoản)
+              </h3>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Các lượt làm bài tự do trên cổng công khai khi học sinh chỉ nhập họ tên tạm thời.
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">
+              {guestAttempts.length} lượt khách
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {guestAttempts.slice(0, 9).map((guest) => {
+              const totalEarned = guest.earned + guest.manualEarned;
+              const totalPossible = guest.possible + guest.manualPossible;
+              const scale10 = totalPossible > 0 ? ((totalEarned / totalPossible) * 10).toFixed(1) : null;
+              return (
+                <div key={guest.id} className="rounded-xl border border-slate-200 p-4 text-sm">
+                  <div className="flex items-start justify-between gap-2">
+                    <strong className="text-[#092b4c]">{guest.participantName || "Khách"}</strong>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${guest.status === "GRADED" ? "bg-emerald-50 text-emerald-700" : guest.status === "SUBMITTED" ? "bg-amber-50 text-amber-700" : "bg-blue-50 text-blue-700"}`}>
+                      {guest.status === "DRAFT" ? "Đang làm" : statusLabels[guest.status]}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate text-xs text-slate-600">{guest.exam.title}</p>
+                  <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5 text-xs">
+                    <span className="font-bold text-[#123d68]">
+                      {guest.status !== "DRAFT" && scale10 ? `${scale10}/10 điểm` : `${answeredCount(guest.answers)}/${guest.exam.questions.length} câu`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => onSelectAttempt(guest.id)}
+                      className="font-bold text-[#d91f2a] hover:underline"
+                    >
+                      Xem bài →
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function StudentAnalyticsModal({
+  student,
+  onSelectAttempt,
+}: {
+  student: StaffStudent;
+  onSelectAttempt: (attemptId: string) => void;
+}) {
+  const finishedAttempts = student.examAttempts.filter((a) => a.status !== "DRAFT");
+  const draftAttempts = student.examAttempts.filter((a) => a.status === "DRAFT");
+  const pendingAttempts = student.examAttempts.filter((a) => a.status === "SUBMITTED");
+
+  const scores10 = finishedAttempts
+    .map((a) => {
+      const p = a.possible + a.manualPossible;
+      const e = a.earned + a.manualEarned;
+      return p > 0 ? (e / p) * 10 : null;
+    })
+    .filter((v): v is number => v !== null);
+
+  const avg10 =
+    scores10.length > 0
+      ? (scores10.reduce((sum, v) => sum + v, 0) / scores10.length).toFixed(1)
+      : "—";
+  const max10 = scores10.length > 0 ? Math.max(...scores10).toFixed(1) : "—";
+
+  // Calculate skill breakdown by QuestionTaskType across finished attempts
+  const skillStatsMap = new Map<
+    string,
+    { taskType: string; label: string; correct: number; total: number }
+  >();
+  let totalAutoQuestions = 0;
+  let totalAutoCorrect = 0;
+
+  for (const attempt of finishedAttempts) {
+    const answers = objectRecord(attempt.answers);
+    const manualScores = objectRecord(attempt.manualScores);
+    for (const q of attempt.exam.questions) {
+      const taskKey = q.taskType || "GENERAL";
+      const label = questionTaskLabels[taskKey] || "Câu hỏi chung";
+      const entry = skillStatsMap.get(taskKey) || {
+        taskType: taskKey,
+        label,
+        correct: 0,
+        total: 0,
+      };
+      const response = String(answers[String(q.position)] || "");
+      const automatic = q.kind !== "ESSAY" && !!q.answer;
+      if (automatic) {
+        entry.total += 1;
+        totalAutoQuestions += 1;
+        if (isAttemptAnswerCorrect(response, q.answer || "", q.kind, q.taskType)) {
+          entry.correct += 1;
+          totalAutoCorrect += 1;
+        }
+        skillStatsMap.set(taskKey, entry);
+      } else if (manualScores[String(q.position)] !== undefined && q.points > 0) {
+        entry.total += 1;
+        totalAutoQuestions += 1;
+        if (Number(manualScores[String(q.position)]) >= q.points * 0.7) {
+          entry.correct += 1;
+          totalAutoCorrect += 1;
+        }
+        skillStatsMap.set(taskKey, entry);
+      }
+    }
+  }
+
+  const skillStats = Array.from(skillStatsMap.values())
+    .filter((s) => s.total > 0)
+    .map((s) => ({
+      ...s,
+      accuracy: Math.round((s.correct / s.total) * 100),
+    }))
+    .sort((a, b) => a.accuracy - b.accuracy); // Weakest skills first so teachers see what needs attention
+
+  return (
+    <div className="space-y-6">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <span className="text-xs font-semibold text-slate-500">Tổng lượt luyện đề</span>
+          <strong className="mt-1 block text-2xl font-extrabold text-[#092b4c]">
+            {student.examAttempts.length} đề
+          </strong>
+          <span className="mt-1 block text-xs text-slate-500">
+            {finishedAttempts.length} đã nộp · {draftAttempts.length} đang làm
+          </span>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <span className="text-xs font-semibold text-slate-500">Điểm trung bình (Thang 10)</span>
+          <strong className="mt-1 block text-2xl font-extrabold text-[#123d68]">
+            {avg10}{scores10.length > 0 ? " / 10" : ""}
+          </strong>
+          <span className="mt-1 block text-xs text-slate-500">
+            Cao nhất: {max10}{scores10.length > 0 ? " / 10" : ""}
+          </span>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <span className="text-xs font-semibold text-slate-500">Tỷ lệ trả lời đúng</span>
+          <strong className="mt-1 block text-2xl font-extrabold text-emerald-700">
+            {totalAutoQuestions > 0
+              ? `${Math.round((totalAutoCorrect / totalAutoQuestions) * 100)}%`
+              : "—"}
+          </strong>
+          <span className="mt-1 block text-xs text-slate-500">
+            {totalAutoCorrect}/{totalAutoQuestions} câu đã chấm
+          </span>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+          <span className="text-xs font-semibold text-slate-500">Bài chờ giáo viên chấm</span>
+          <strong className={`mt-1 block text-2xl font-extrabold ${pendingAttempts.length > 0 ? "text-amber-700" : "text-slate-700"}`}>
+            {pendingAttempts.length} bài
+          </strong>
+          <span className="mt-1 block text-xs text-slate-500">
+            Tham gia từ {new Date(student.createdAt).toLocaleDateString("vi-VN")}
+          </span>
+        </div>
+      </div>
+
+      {student.enrollments.length > 0 && (
+        <section className="rounded-xl border border-slate-200 p-4">
+          <h3 className="text-sm font-bold text-[#092b4c]">
+            Khóa học đang theo học tại trung tâm
+          </h3>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {student.enrollments.map((enr) => (
+              <div key={enr.id} className="rounded-lg bg-slate-50 p-3">
+                <div className="flex items-center justify-between text-sm">
+                  <strong className="text-[#092b4c]">{enr.course.title}</strong>
+                  <span className="font-extrabold text-[#123d68]">{enr.progress}%</span>
+                </div>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {enr.course.level || "Chương trình chuẩn"} · {enr.course.ageRange}
+                </p>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-200">
+                  <div
+                    className="h-full rounded-full bg-[#123d68]"
+                    style={{ width: `${enr.progress}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {skillStats.length > 0 && (
+        <section className="rounded-xl border border-slate-200 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-bold text-[#092b4c]">
+                Phân tích năng lực theo dạng bài (Điểm mạnh & Điểm yếu)
+              </h3>
+              <p className="text-xs text-slate-500">
+                Tổng hợp từ các câu trả lời của học viên giúp giáo viên biết dạng bài nào cần ôn tập thêm.
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 grid gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
+            {skillStats.map((skill) => {
+              const badgeClass =
+                skill.accuracy >= 75
+                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : skill.accuracy >= 50
+                    ? "bg-amber-50 text-amber-800 border-amber-200"
+                    : "bg-red-50 text-red-700 border-red-200";
+              const statusText =
+                skill.accuracy >= 75
+                  ? "Vững vàng"
+                  : skill.accuracy >= 50
+                    ? "Cần củng cố"
+                    : "Hay sai · Cần kèm thêm";
+              return (
+                <div
+                  key={skill.taskType}
+                  className={`rounded-xl border p-3 ${badgeClass}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <strong className="text-xs font-extrabold">{skill.label}</strong>
+                    <span className="text-sm font-black tabular-nums">{skill.accuracy}%</span>
+                  </div>
+                  <div className="mt-1.5 flex items-center justify-between text-[11px] opacity-85">
+                    <span>Đúng {skill.correct}/{skill.total} câu</span>
+                    <span className="font-bold">{statusText}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <section>
+        <h3 className="text-sm font-bold text-[#092b4c]">
+          Lịch sử làm đề chi tiết ({student.examAttempts.length} lượt)
+        </h3>
+        <div className="mt-3 max-h-80 space-y-2.5 overflow-y-auto pr-1">
+          {student.examAttempts.map((attempt) => {
+            const totalEarned = attempt.earned + attempt.manualEarned;
+            const totalPossible = attempt.possible + attempt.manualPossible;
+            const scale10 =
+              totalPossible > 0 ? ((totalEarned / totalPossible) * 10).toFixed(1) : null;
+            return (
+              <div
+                key={attempt.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-3.5 text-sm"
+              >
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="text-[#092b4c]">{attempt.exam.title}</strong>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold uppercase ${
+                        attempt.status === "GRADED"
+                          ? "bg-emerald-50 text-emerald-700"
+                          : attempt.status === "SUBMITTED"
+                            ? "bg-amber-50 text-amber-700"
+                            : "bg-blue-50 text-blue-700"
+                      }`}
+                    >
+                      {attempt.status === "DRAFT"
+                        ? "Đang làm"
+                        : statusLabels[attempt.status]}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {answeredCount(attempt.answers)}/{attempt.exam.questions.length} câu đã trả lời · Cập nhật {formatDate(attempt.updatedAt)}
+                  </p>
+                  {attempt.teacherFeedback && (
+                    <p className="mt-1.5 rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-600">
+                      <strong>Nhận xét GV:</strong> {attempt.teacherFeedback}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  {attempt.status !== "DRAFT" && (
+                    <div className="text-right">
+                      <strong className="block text-sm text-[#092b4c]">
+                        {totalEarned}/{totalPossible} điểm
+                      </strong>
+                      {scale10 && (
+                        <span className="block text-xs font-bold text-[#123d68]">
+                          Thang 10: {scale10}/10
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onSelectAttempt(attempt.id)}
+                    className="btn-outline min-h-9 px-3 text-xs font-bold"
+                  >
+                    {attempt.status === "DRAFT" ? "Xem tiến độ" : "Xem chi tiết / Chấm bài"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {student.examAttempts.length === 0 && (
+            <p className="rounded-xl bg-slate-50 p-6 text-center text-sm text-slate-500">
+              Học viên này chưa bắt đầu làm đề thi nào.
+            </p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function QuestionErrorAnalyticsPanel({
+  attempts,
+  exams,
+  selectedExamId,
+  onSelectExamId,
+}: {
+  attempts: StaffAttempt[];
+  exams: Exam[];
+  selectedExamId: string;
+  onSelectExamId: (examId: string) => void;
+}) {
+  const submitted = attempts.filter(
+    (a) =>
+      a.status !== "DRAFT" &&
+      (selectedExamId === "ALL" || a.exam.id === selectedExamId),
+  );
+
+  if (submitted.length === 0) return null;
+
+  const questionMap = new Map<
+    string,
+    {
+      key: string;
+      examTitle: string;
+      position: number;
+      taskType: string;
+      prompt: string;
+      correctAnswer: string;
+      wrongCount: number;
+      totalCount: number;
+      wrongChoices: Record<string, number>;
+    }
+  >();
+
+  for (const attempt of submitted) {
+    const answers = objectRecord(attempt.answers);
+    for (const q of attempt.exam.questions) {
+      if (q.kind === "ESSAY" || !q.answer) continue;
+      const key = `${attempt.exam.id}-${q.position}`;
+      const item = questionMap.get(key) || {
+        key,
+        examTitle: attempt.exam.title,
+        position: q.position,
+        taskType: q.taskType || "GENERAL",
+        prompt: stripFormattedText(
+          cleanQuestionPrompt(q.content, q.section, q.taskType, q.position),
+        ),
+        correctAnswer: q.answer,
+        wrongCount: 0,
+        totalCount: 0,
+        wrongChoices: {},
+      };
+      const response = String(answers[String(q.position)] || "").trim();
+      item.totalCount += 1;
+      const isCorrect = isAttemptAnswerCorrect(
+        response,
+        q.answer,
+        q.kind,
+        q.taskType,
+      );
+      if (!isCorrect) {
+        item.wrongCount += 1;
+        const chosenLabel = response ? response.toUpperCase().slice(0, 20) : "Bỏ trống";
+        item.wrongChoices[chosenLabel] = (item.wrongChoices[chosenLabel] || 0) + 1;
+      }
+      questionMap.set(key, item);
+    }
+  }
+
+  const mostMissed = Array.from(questionMap.values())
+    .filter((item) => item.wrongCount > 0)
+    .map((item) => ({
+      ...item,
+      errorRate: Math.round((item.wrongCount / item.totalCount) * 100),
+      topWrongChoice:
+        Object.entries(item.wrongChoices).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+    }))
+    .sort((a, b) => b.errorRate - a.errorRate || b.wrongCount - a.wrongCount)
+    .slice(0, 6);
+
+  if (mostMissed.length === 0) return null;
+
+  return (
+    <details className="soft-card p-5">
+      <summary className="flex cursor-pointer flex-wrap items-center justify-between gap-3 text-sm font-bold text-[#092b4c]">
+        <span>
+          Phân tích câu hỏi học viên hay làm sai nhất ({mostMissed.length} câu cần lưu ý chữa bài)
+        </span>
+        <span className="rounded-full bg-red-50 px-3 py-1 text-xs font-extrabold text-red-700">
+          Gợi ý chữa đề trên lớp
+        </span>
+      </summary>
+      <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+          <span>
+            Thống kê dựa trên <strong>{submitted.length} bài đã nộp</strong>. Các câu dưới đây có tỷ lệ học viên trả lời sai hoặc bỏ trống cao nhất:
+          </span>
+          {selectedExamId !== "ALL" && (
+            <button
+              type="button"
+              onClick={() => onSelectExamId("ALL")}
+              className="font-bold text-[#123d68] underline"
+            >
+              Xem trên tất cả đề ({exams.length})
+            </button>
+          )}
+        </div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {mostMissed.map((item) => (
+            <div
+              key={item.key}
+              className="rounded-xl border border-red-100 bg-red-50/30 p-3.5 text-xs"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <strong className="text-sm text-[#092b4c]">
+                    Câu {item.position} · {item.examTitle}
+                  </strong>
+                  <span className="ml-2 rounded-full bg-white px-2 py-0.5 text-[10px] font-bold text-slate-600">
+                    {questionTaskLabels[item.taskType] || "Câu hỏi chung"}
+                  </span>
+                </div>
+                <span className="shrink-0 rounded-lg bg-red-100 px-2 py-1 font-extrabold text-red-800">
+                  Sai {item.errorRate}% ({item.wrongCount}/{item.totalCount})
+                </span>
+              </div>
+              <p className="mt-1.5 line-clamp-2 text-slate-700">{item.prompt}</p>
+              <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-slate-600">
+                <span>
+                  Đáp án đúng: <strong className="text-emerald-700">{item.correctAnswer}</strong>
+                </span>
+                {item.topWrongChoice && (
+                  <span>
+                    Hay nhầm sang: <strong className="text-red-700">{item.topWrongChoice}</strong>
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
   );
 }
 function Field({
